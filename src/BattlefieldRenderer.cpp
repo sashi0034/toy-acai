@@ -42,6 +42,8 @@ struct BattlefieldRenderer::Impl
     Image missileImage = Icon::CreateImage(0xF0079, 256); // https://pictogrammers.com/library/mdi/icon/battery/
     Texture missileTexture{missileImage};
 
+    Font font{24};
+
     std::array<std::vector<TrailPoint>, FighterCount> fighterTrails;
 
     void updateTrails(const BattlefieldContext& context, double deltaTime)
@@ -141,6 +143,43 @@ namespace toy_acai
         {
             const Vec2 pos = context.battlefieldArea.pos + missile.position;
             (void)p_impl->missileTexture.resized(MissileSize).rotated(missile.yaw + Math::HalfPi).drawAt(pos, GetTeamColor(missile.teamId));
+        }
+
+        // ファイター識別用の文字列を描画
+        for (const auto& fighter : context.fighters)
+        {
+            if (!IsAlive(fighter))
+            {
+                continue;
+            }
+
+            String name = (fighter.teamId == 0 ? U"B" : U"R") + Format(fighter.memberId);
+            const Vec2 pos = context.battlefieldArea.pos + fighter.position;
+            p_impl->font(name).drawAt(pos.movedBy(0, -FighterSize * 0.75), ColorF{0.1});
+        }
+
+        // 各情報を描画
+        {
+            // 生存しているファイターの数
+            int alive0 = 0;
+            int alive1 = 0;
+            for (const auto& fighter : context.fighters)
+            {
+                if (IsAlive(fighter))
+                {
+                    if (fighter.teamId == 0)
+                    {
+                        alive0++;
+                    }
+                    else
+                    {
+                        alive1++;
+                    }
+                }
+            }
+
+            String desc = U"Alive: " + Format(alive0) + U"-" + Format(alive1);
+            p_impl->font(desc).draw(Arg::center = (context.screenSize * 0.5).withY(64.0), ColorF{0.1});
         }
     }
 }

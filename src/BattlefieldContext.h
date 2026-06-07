@@ -9,6 +9,7 @@ namespace toy_acai
     struct FighterState
     {
         int teamId;
+        int memberId; // 同じチーム内での識別 ID
         Vec2 position; // battlefieldArea.pos からの相対座標
         double yaw;
         double speed;

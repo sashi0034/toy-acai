@@ -242,6 +242,7 @@ namespace toy_acai
                 constexpr double fighterInitialHealth = 1.0;
                 context.fighters[index] = FighterState{
                     team,
+                    member,
                     Vec2{x, y},
                     team == 0 ? 0.0 : Math::Pi,
                     fighterMaxSpeed * 0.35,

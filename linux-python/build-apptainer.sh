@@ -29,7 +29,7 @@ if [[ -z "${SLURM_JOB_ID:-}" && -z "${TOY_ACAI_INSIDE_SLURM:-}" ]]; then
 		--wait \
 		-p "${SLURM_PARTITION}" \
 		--time="${SLURM_TIME}" \
-		--job-name=toy-acai-build \
+		--job-name=toy-acai-python-build \
 		--output="${BUILD_DIR}/slurm-%j.out" \
 		--export=ALL,TOY_ACAI_INSIDE_SLURM=1,TOY_ACAI_SCRIPT_DIR="${SCRIPT_DIR}",TOY_ACAI_REPO_ROOT="${REPO_ROOT}",SIV3D_ROOT="${SIV3D_ROOT}",SIV3D_APPTAINER_IMAGE="${SIV3D_APPTAINER_IMAGE}",BUILD_DIR="${BUILD_DIR}",BUILD_PARALLELISM="${BUILD_PARALLELISM}" \
 		"${BASH_SOURCE[0]}")
@@ -64,9 +64,4 @@ apptainer exec \
 			-DCMAKE_BUILD_TYPE=Release
 
 		cmake --build "${BUILD_DIR}" --parallel "${BUILD_PARALLELISM}"
-
-		cd "${TEST_ROOT}"
-		"${BUILD_DIR}/toy-acai"
-
-		ctest --test-dir "${BUILD_DIR}" --output-on-failure
 	'

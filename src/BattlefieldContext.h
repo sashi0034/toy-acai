@@ -46,5 +46,5 @@ namespace toy_acai
 
     void InitBattlefield(BattlefieldContext& context);
 
-    void UpdateBattlefield(BattlefieldContext& context, const FighterInput& input, double deltaTime);
+    void UpdateBattlefield(BattlefieldContext& context, const std::array<FighterInput, FighterCount>& inputs, double deltaTime);
 }

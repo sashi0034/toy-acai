@@ -3,6 +3,8 @@
 #include "BattlefieldContext.h"
 #include "BattlefieldRenderer.h"
 
+#include <array>
+
 using namespace toy_acai;
 
 #if SIV3D_PLATFORM(LINUX)
@@ -46,8 +48,10 @@ namespace
                 (frame < frameCount / 2) ? 0.5 : -0.5,
                 ((frame + 1) % 5) == 0,
             };
+            std::array<FighterInput, FighterCount> inputs{};
+            inputs.fill(input);
 
-            UpdateBattlefield(battlefield, input, deltaTime);
+            UpdateBattlefield(battlefield, inputs, deltaTime);
             renderer.render(battlefield, deltaTime);
 
             if (!writer.writeFrame(renderer.imageBuffer(), SecondsF{deltaTime}))
@@ -84,10 +88,12 @@ void Main()
             static_cast<double>(KeyD.pressed()) - static_cast<double>(KeyA.pressed()),
             KeySpace.pressed(),
         };
+        std::array<FighterInput, FighterCount> inputs{};
+        inputs.fill(input);
 
         const double deltaTime = Scene::DeltaTime();
 
-        UpdateBattlefield(battlefield, input, deltaTime);
+        UpdateBattlefield(battlefield, inputs, deltaTime);
 
         renderer.render(battlefield, deltaTime);
     }

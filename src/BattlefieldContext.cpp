@@ -109,7 +109,7 @@ namespace
         shooter.missileCooldown = cooldown;
     }
 
-    void UpdateFighters(BattlefieldContext& context, const FighterInput& input, double deltaTime)
+    void UpdateFighters(BattlefieldContext& context, const std::array<FighterInput, FighterCount>& inputs, double deltaTime)
     {
         for (int i = 0; i < FighterCount; ++i)
         {
@@ -120,6 +120,8 @@ namespace
             }
 
             fighter.missileCooldown = std::max(0.0, fighter.missileCooldown - deltaTime);
+
+            const FighterInput& input = inputs[i];
 
             constexpr double turnRate = 2.0;
             fighter.yaw = NormalizeAngle(fighter.yaw + input.turn * turnRate * deltaTime);
@@ -256,9 +258,9 @@ namespace toy_acai
         }
     }
 
-    void UpdateBattlefield(BattlefieldContext& context, const FighterInput& input, double deltaTime)
+    void UpdateBattlefield(BattlefieldContext& context, const std::array<FighterInput, FighterCount>& inputs, double deltaTime)
     {
-        UpdateFighters(context, input, deltaTime);
+        UpdateFighters(context, inputs, deltaTime);
 
         UpdateMissiles(context, deltaTime);
     }

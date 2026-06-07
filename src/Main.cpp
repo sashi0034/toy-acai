@@ -16,10 +16,56 @@ namespace
         Window::Resize(Size{1280, 720});
         System::SetTerminationTriggers(UserAction::CloseButtonClicked);
     }
+
+    void SimulateWithoutVideo()
+    {
+        constexpr double deltaTime = 0.1;
+        constexpr int frameCount = 20;
+        constexpr FilePathView outputPath = U"battlefield.gif";
+
+        BattlefieldContext battlefield{};
+        InitBattlefield(battlefield);
+
+        BattlefieldRenderer renderer{};
+        renderer.setRenderToImageBuffer(true);
+
+        AnimatedGIFWriter writer{};
+        if (!writer.open(outputPath, renderer.imageBuffer().size()))
+        {
+            throw Error{U"Failed to open GIF writer: " + String{outputPath}};
+        }
+
+        for (int frame = 0; frame < frameCount; ++frame)
+        {
+            const FighterInput input{
+                0.8,
+                (frame < frameCount / 2) ? 0.5 : -0.5,
+                ((frame + 1) % 5) == 0,
+            };
+
+            UpdateBattlefield(battlefield, input, deltaTime);
+            renderer.render(battlefield, deltaTime);
+
+            if (!writer.writeFrame(renderer.imageBuffer(), SecondsF{deltaTime}))
+            {
+                throw Error{U"Failed to write GIF frame: " + Format(frame)};
+            }
+        }
+
+        if (!writer.close())
+        {
+            throw Error{U"Failed to close GIF writer: " + String{outputPath}};
+        }
+    }
 }
 
 void Main()
 {
+#if 1
+    SimulateWithoutVideo();
+    return;
+#endif
+
     InitializeWindowAndScene();
 
     BattlefieldContext battlefield{};

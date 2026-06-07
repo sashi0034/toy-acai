@@ -177,7 +177,14 @@ namespace toy_acai
         p_impl->updateTrails(context, deltaTime);
 
         // 背景を描画
-        p_impl->render(RectF{context.screenSize}, ColorF{1.0f}.toColor());
+        if (p_impl->m_renderToImageBuffer)
+        {
+            p_impl->m_imageBuffer.fill(Palette::White);
+        }
+        else
+        {
+            p_impl->render(RectF{context.screenSize}, ColorF{1.0f}.toColor());
+        }
 
         // グリッドを描画
         const Vec2 gridCenter = context.battlefieldArea.pos + Vec2{context.battlefieldArea.w * 0.5, context.battlefieldArea.h * 0.5};

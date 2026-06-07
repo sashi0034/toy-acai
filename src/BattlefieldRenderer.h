@@ -10,6 +10,10 @@ namespace toy_acai
 
         void render(const BattlefieldContext& context, double deltaTime);
 
+        void setRenderToImageBuffer(bool enabled);
+
+        const Image& imageBuffer() const;
+
     private:
         struct Impl;
         std::shared_ptr<Impl> p_impl;

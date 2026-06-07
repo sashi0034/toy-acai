@@ -30,6 +30,8 @@ namespace
         default: return ColorF{Palette::Gray};
         }
     }
+
+    constexpr double trailDuration = 1.5;
 }
 
 struct BattlefieldRenderer::Impl
@@ -56,7 +58,10 @@ struct BattlefieldRenderer::Impl
                 std::remove_if(
                     trail.begin(),
                     trail.end(),
-                    [](const TrailPoint& point) { return TrailDuration < point.age; }),
+                    [](const TrailPoint& point)
+                    {
+                        return trailDuration < point.age;
+                    }),
                 trail.end());
 
             if (IsAlive(context.fighters[i]))
@@ -113,7 +118,7 @@ namespace toy_acai
             {
                 const Vec2 from = context.battlefieldArea.pos + trail[i - 1].position;
                 const Vec2 to = context.battlefieldArea.pos + trail[i].position;
-                const double alpha = 0.35 * (1.0 - std::min(trail[i].age / TrailDuration, 1.0));
+                const double alpha = 0.35 * (1.0 - std::min(trail[i].age / trailDuration, 1.0));
                 (void)Line{from, to}.draw(2.0, GetTeamColor(teamId).withAlpha(alpha));
             }
         }

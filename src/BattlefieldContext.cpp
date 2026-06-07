@@ -1,7 +1,6 @@
 ﻿#include "BattlefieldContext.h"
 
 #include <algorithm>
-#include <cmath>
 #include <limits>
 #include <utility>
 
@@ -9,7 +8,8 @@ using namespace toy_acai;
 
 namespace
 {
-    constexpr int FighterCount = TeamCount * TeamFighterCount;
+    constexpr double fighterMaxSpeed = 360.0;
+
     constexpr double TwoPi = 6.28318530717958647692;
 
     Vec2 Forward(double yaw)
@@ -100,15 +100,18 @@ namespace
         }
 
         const Vec2 forward = Forward(shooter.yaw);
+        constexpr double missileSpeed = 500.0;
         context.missiles.push_back(MissileState{
             shooter.position + forward * (FighterSize * 0.75),
             shooter.yaw,
-            MissileSpeed,
+            missileSpeed,
             0.0,
             shooter.teamId,
             targetIndex,
         });
-        shooter.missileCooldown = MissileFireCooldown;
+
+        constexpr double cooldown = 1.0;
+        shooter.missileCooldown = cooldown;
     }
 
     void UpdateFighters(BattlefieldContext& context, const FighterInput& input, double deltaTime)
@@ -122,11 +125,16 @@ namespace
             }
 
             fighter.missileCooldown = std::max(0.0, fighter.missileCooldown - deltaTime);
-            fighter.yaw = NormalizeAngle(fighter.yaw + input.turn * FighterTurnRate * deltaTime);
+
+            constexpr double turnRate = 2.0;
+            fighter.yaw = NormalizeAngle(fighter.yaw + input.turn * turnRate * deltaTime);
 
             constexpr double minimumSpeed = 50.0;
-            fighter.speed *= std::pow(FighterDrag, deltaTime * 60.0);
-            fighter.speed = std::clamp(fighter.speed + input.acceleration * FighterAcceleration * deltaTime, minimumSpeed, FighterMaxSpeed);
+            constexpr double fighterDrag = 0.985;
+            fighter.speed *= std::pow(fighterDrag, deltaTime * 60.0);
+
+            constexpr double acceleration = 250.0;
+            fighter.speed = std::clamp(fighter.speed + input.acceleration * acceleration * deltaTime, minimumSpeed, fighterMaxSpeed);
 
             fighter.position += Forward(fighter.yaw) * fighter.speed * deltaTime;
 
@@ -137,7 +145,8 @@ namespace
             else
             {
                 fighter.outOfBoundsTime += deltaTime;
-                if (OutOfBoundsDeathTime <= fighter.outOfBoundsTime)
+                constexpr double outOfBoundsDeathTime = 3.0;
+                if (outOfBoundsDeathTime <= fighter.outOfBoundsTime)
                 {
                     fighter.health = 0.0;
                     continue;
@@ -159,7 +168,8 @@ namespace
         for (auto missile : context.missiles)
         {
             missile.age += deltaTime;
-            if (MissileLifetime < missile.age || missile.targetFighterIndex < 0 || FighterCount <= missile.targetFighterIndex)
+            constexpr double lifetime = 6.0;
+            if (lifetime < missile.age || missile.targetFighterIndex < 0 || FighterCount <= missile.targetFighterIndex)
             {
                 continue;
             }
@@ -173,12 +183,14 @@ namespace
             const Vec2 toTarget = target.position - missile.position;
             const double desiredYaw = std::atan2(toTarget.y, toTarget.x);
             const double yawDelta = NormalizeAngle(desiredYaw - missile.yaw);
-            const double maxTurn = MissileTurnRate * deltaTime;
+            constexpr double turnRate = 1.5;
+            const double maxTurn = turnRate * deltaTime;
             missile.yaw += std::clamp(yawDelta, -maxTurn, maxTurn);
 
             missile.position += Forward(missile.yaw) * missile.speed * deltaTime;
 
-            if (DistanceSq(missile.position, target.position) <= MissileHitRadius * MissileHitRadius)
+            constexpr double hitRadius = MissileSize;
+            if (DistanceSq(missile.position, target.position) <= hitRadius * hitRadius)
             {
                 target.health = 0.0;
                 continue;
@@ -207,12 +219,13 @@ namespace toy_acai
                 const double x = team == 0 ? context.battlefieldArea.w * 0.22 : context.battlefieldArea.w * 0.78;
                 const double y = context.battlefieldArea.h * (member + 1.0) / (TeamFighterCount + 1.0);
 
+                constexpr double fighterInitialHealth = 1.0;
                 context.fighters[index] = FighterState{
                     team,
                     Vec2{x, y},
-                    team == 0 ? 0.0 : 3.14159265358979323846,
-                    FighterMaxSpeed * 0.35,
-                    FighterInitialHealth,
+                    team == 0 ? 0.0 : Math::Pi,
+                    fighterMaxSpeed * 0.35,
+                    fighterInitialHealth,
                     0.0,
                     0.0,
                 };

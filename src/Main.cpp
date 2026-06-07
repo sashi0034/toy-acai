@@ -5,6 +5,10 @@
 
 using namespace toy_acai;
 
+#if SIV3D_PLATFORM(LINUX)
+SIV3D_SET(EngineOption::Renderer::Headless)
+#endif
+
 namespace
 {
     void InitializeWindowAndScene()
@@ -61,7 +65,7 @@ namespace
 
 void Main()
 {
-#if 1
+#if SIV3D_PLATFORM(LINUX)
     SimulateWithoutVideo();
     return;
 #endif

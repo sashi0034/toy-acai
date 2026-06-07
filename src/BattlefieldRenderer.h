@@ -1,4 +1,6 @@
 ﻿#pragma once
+#include <memory>
+
 #include "BattlefieldContext.h"
 
 namespace toy_acai

@@ -1,5 +1,7 @@
 ﻿#pragma once
 
+#include <Siv3D.hpp>
+
 namespace toy_acai
 {
     constexpr int TeamCount = 2;

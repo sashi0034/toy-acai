@@ -1,7 +1,6 @@
 ﻿#include "BattlefieldContext.h"
 
 #include <algorithm>
-#include <limits>
 #include <utility>
 
 using namespace toy_acai;
@@ -42,9 +41,7 @@ namespace
     {
         const auto& shooter = context.fighters[shooterIndex];
         const Vec2 forward = Forward(shooter.yaw);
-        int nearestIndex = -1;
         int nearestFrontIndex = -1;
-        double nearestDistanceSq = std::numeric_limits<double>::max();
         double nearestFrontDistanceSq = std::numeric_limits<double>::max();
 
         for (int i = 0; i < FighterCount; ++i)
@@ -57,12 +54,6 @@ namespace
 
             const Vec2 toTarget = target.position - shooter.position;
             const double distanceSq = toTarget.x * toTarget.x + toTarget.y * toTarget.y;
-            if (distanceSq < nearestDistanceSq)
-            {
-                nearestDistanceSq = distanceSq;
-                nearestIndex = i;
-            }
-
             const double distance = std::sqrt(distanceSq);
             if (distance <= 0.0)
             {
@@ -70,14 +61,15 @@ namespace
             }
 
             const double dot = (toTarget.x * forward.x + toTarget.y * forward.y) / distance;
-            if (dot >= 0.35 && distanceSq < nearestFrontDistanceSq)
+            constexpr double seekerHalfAngle = 0.85;
+            if (dot >= std::cos(seekerHalfAngle) && distanceSq < nearestFrontDistanceSq)
             {
                 nearestFrontDistanceSq = distanceSq;
                 nearestFrontIndex = i;
             }
         }
 
-        return nearestFrontIndex != -1 ? nearestFrontIndex : nearestIndex;
+        return nearestFrontIndex;
     }
 
     void FireMissile(BattlefieldContext& context, int shooterIndex)
@@ -100,11 +92,12 @@ namespace
         }
 
         const Vec2 forward = Forward(shooter.yaw);
-        constexpr double missileSpeed = 500.0;
+        constexpr double initialSpeed = 150.0;
         context.missiles.push_back(MissileState{
             shooter.position + forward * (FighterSize * 0.75),
             shooter.yaw,
-            missileSpeed,
+            initialSpeed,
+            0.0,
             0.0,
             shooter.teamId,
             targetIndex,
@@ -169,30 +162,57 @@ namespace
         {
             missile.age += deltaTime;
             constexpr double lifetime = 6.0;
-            if (lifetime < missile.age || missile.targetFighterIndex < 0 || FighterCount <= missile.targetFighterIndex)
+            if (lifetime < missile.age)
             {
                 continue;
             }
 
-            auto& target = context.fighters[missile.targetFighterIndex];
-            if (!IsAlive(target))
+            const bool hasTarget = 0 <= missile.targetFighterIndex && missile.targetFighterIndex < FighterCount;
+            FighterState* target = hasTarget ? &context.fighters[missile.targetFighterIndex] : nullptr;
+            const bool targetAlive = target != nullptr && IsAlive(*target);
+
+            if (targetAlive)
+            {
+                const Vec2 toTarget = target->position - missile.position;
+                const double desiredYaw = std::atan2(toTarget.y, toTarget.x);
+                const double yawDelta = NormalizeAngle(desiredYaw - missile.yaw);
+                constexpr double seekerHalfAngle = 0.85;
+                if (std::abs(yawDelta) <= seekerHalfAngle)
+                {
+                    constexpr double turnRate = 1.5;
+                    const double maxTurn = turnRate * deltaTime;
+                    missile.yaw = NormalizeAngle(missile.yaw + std::clamp(yawDelta, -maxTurn, maxTurn));
+                    missile.lockLostTime = 0.0;
+                }
+                else
+                {
+                    missile.lockLostTime += deltaTime;
+                }
+            }
+            else
+            {
+                missile.lockLostTime += deltaTime;
+            }
+
+            constexpr double lockLostLifetime = 1.2;
+            if (lockLostLifetime < missile.lockLostTime)
             {
                 continue;
             }
 
-            const Vec2 toTarget = target.position - missile.position;
-            const double desiredYaw = std::atan2(toTarget.y, toTarget.x);
-            const double yawDelta = NormalizeAngle(desiredYaw - missile.yaw);
-            constexpr double turnRate = 1.5;
-            const double maxTurn = turnRate * deltaTime;
-            missile.yaw += std::clamp(yawDelta, -maxTurn, maxTurn);
+            constexpr double boostDuration = 1.0;
+            if (missile.age <= boostDuration)
+            {
+                constexpr double boostAcceleration = 150.0;
+                missile.speed += boostAcceleration * deltaTime;
+            }
 
             missile.position += Forward(missile.yaw) * missile.speed * deltaTime;
 
             constexpr double hitRadius = MissileSize;
-            if (DistanceSq(missile.position, target.position) <= hitRadius * hitRadius)
+            if (targetAlive && DistanceSq(missile.position, target->position) <= hitRadius * hitRadius)
             {
-                target.health = 0.0;
+                target->health = 0.0;
                 continue;
             }
 

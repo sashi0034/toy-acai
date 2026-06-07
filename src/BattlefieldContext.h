@@ -23,6 +23,7 @@ namespace toy_acai
         double yaw;
         double speed;
         double age;
+        double lockLostTime;
         int teamId;
         int targetFighterIndex;
     };

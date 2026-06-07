@@ -1,4 +1,7 @@
 ﻿#pragma once
+#include <array>
+#include <vector>
+
 #include "BattlefieldParameters.h"
 
 namespace toy_acai
@@ -11,6 +14,7 @@ namespace toy_acai
         double speed;
         double health;
         double missileCooldown;
+        double outOfBoundsTime;
     };
 
     struct MissileState
@@ -18,11 +22,15 @@ namespace toy_acai
         Vec2 position; // battlefieldArea.pos からの相対座標
         double yaw;
         double speed;
+        double age;
+        int teamId;
+        int targetFighterIndex;
     };
 
     struct BattlefieldContext
     {
         std::array<FighterState, TeamCount * TeamFighterCount> fighters;
+        std::vector<MissileState> missiles;
         Float2 screenSize;
         RectF battlefieldArea;
     };

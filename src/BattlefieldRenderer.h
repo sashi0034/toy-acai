@@ -8,7 +8,7 @@ namespace toy_acai
     public:
         BattlefieldRenderer();
 
-        void render(const BattlefieldContext& context);
+        void render(const BattlefieldContext& context, double deltaTime);
 
     private:
         struct Impl;

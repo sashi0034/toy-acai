@@ -29,11 +29,17 @@ void Main()
 
     while (System::Update())
     {
-        // TODO: 取り敢えずユーザー入力 (WASD, Space) を全員にブロードキャストしたい
+        const FighterInput input{
+            static_cast<double>(KeyW.pressed()) - static_cast<double>(KeyS.pressed()),
+            static_cast<double>(KeyD.pressed()) - static_cast<double>(KeyA.pressed()),
+            KeySpace.pressed(),
+        };
 
-        UpdateBattlefield(battlefield, FighterInput{}, Scene::DeltaTime());
+        const double deltaTime = Scene::DeltaTime();
 
-        renderer.render(battlefield);
+        UpdateBattlefield(battlefield, input, deltaTime);
+
+        renderer.render(battlefield, deltaTime);
     }
 }
 

@@ -59,7 +59,7 @@ PackConstructorInitializers: NextLine
 
 BreakBeforeConceptDeclarations: Always
 BreakBeforeBinaryOperators: None
-BreakBeforeTernaryOperators: false
+BreakBeforeTernaryOperators: true
 BreakConstructorInitializers: BeforeColon
 BreakInheritanceList: AfterColon
 BreakStringLiterals: false

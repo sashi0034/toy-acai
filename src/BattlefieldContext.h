@@ -33,7 +33,7 @@ namespace toy_acai
     {
         std::array<FighterState, TeamCount * TeamFighterCount> fighters;
         std::vector<MissileState> missiles;
-        Float2 screenSize;
+        Vec2 screenSize;
         RectF battlefieldArea;
     };
 

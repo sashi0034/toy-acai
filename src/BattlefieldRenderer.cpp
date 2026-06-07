@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <utility>
 #include <vector>
 
@@ -48,7 +49,8 @@ namespace
 
         void paintAt(Image& dst, const Vec2& pos, double angle, double size, const ColorF& color) const
         {
-            const Size imageSize{static_cast<int32>(size), static_cast<int32>(size)};
+            const int32 imageLength = std::max<int32>(1, static_cast<int32>(std::round(size)));
+            const Size imageSize{imageLength, imageLength};
             m_image.scaled(imageSize).rotated(angle).paintAt(dst, pos.asPoint(), color.toColor());
         }
 
@@ -60,13 +62,18 @@ namespace
 
 struct BattlefieldRenderer::Impl
 {
-    Image m_imageBuffer{1920, 1080};
     bool m_renderToImageBuffer{};
+    Image m_imageBuffer{1920, 1080};
+    Vec2 m_imageBufferScale{1.0, 1.0};
 
     PaintableTexture fighterTexture{Icon::CreateImage(0xF0390, 256)}; // https://pictogrammers.com/library/mdi/icon/navigation/
     PaintableTexture missileTexture{Icon::CreateImage(0xF0079, 256)}; // https://pictogrammers.com/library/mdi/icon/battery/
 
+    static constexpr int32 FontSize = 24;
+
     Font font{24};
+    Font imageBufferFont{24};
+    int32 imageBufferFontSize{24};
 
     std::array<std::vector<TrailPoint>, FighterCount> fighterTrails;
 
@@ -156,15 +163,38 @@ struct BattlefieldRenderer::Impl
             }
         }
     }
+
+    void updateImageBufferScale(const BattlefieldContext& context)
+    {
+        if (!m_renderToImageBuffer)
+        {
+            m_imageBufferScale = Vec2{1.0, 1.0};
+            return;
+        }
+
+        const Size imageBufferSize = m_imageBuffer.size();
+        m_imageBufferScale = Vec2{
+            imageBufferSize.x / context.screenSize.x,
+            imageBufferSize.y / context.screenSize.y,
+        };
+
+        const int32 fontSize = std::max<int32>(1, static_cast<int32>(std::round(FontSize * m_imageBufferScale.minComponent())));
+        if (fontSize != imageBufferFontSize)
+        {
+            imageBufferFont = Font{fontSize};
+            imageBufferFontSize = fontSize;
+        }
+    }
 };
 
 namespace toy_acai
 {
     BattlefieldRenderer::BattlefieldRenderer() : p_impl(std::make_shared<Impl>()) {}
 
-    void BattlefieldRenderer::setRenderToImageBuffer(bool enabled)
+    void BattlefieldRenderer::EnableRenderToImageBuffer(Size size)
     {
-        p_impl->m_renderToImageBuffer = enabled;
+        p_impl->m_imageBuffer = Image{size};
+        p_impl->m_renderToImageBuffer = true;
     }
 
     const Image& BattlefieldRenderer::imageBuffer() const
@@ -172,8 +202,27 @@ namespace toy_acai
         return p_impl->m_imageBuffer;
     }
 
+    double BattlefieldRenderer::v1(double value) const
+    {
+        return value * p_impl->m_imageBufferScale.minComponent();
+    }
+
+    Vec2 BattlefieldRenderer::v2(const Vec2& pos) const
+    {
+        return Vec2{
+            pos.x * p_impl->m_imageBufferScale.x,
+            pos.y * p_impl->m_imageBufferScale.y,
+        };
+    }
+
+    Vec2 BattlefieldRenderer::v2(double x, double y) const
+    {
+        return v2(Vec2{x, y});
+    }
+
     void BattlefieldRenderer::render(const BattlefieldContext& context, double deltaTime)
     {
+        p_impl->updateImageBufferScale(context);
         p_impl->updateTrails(context, deltaTime);
 
         // 背景を描画
@@ -188,24 +237,31 @@ namespace toy_acai
 
         // グリッドを描画
         const Vec2 gridCenter = context.battlefieldArea.pos + Vec2{context.battlefieldArea.w * 0.5, context.battlefieldArea.h * 0.5};
+        const auto lineThickness = [this](double thickness)
+        {
+            return std::max<int32>(1, static_cast<int32>(std::round(v1(thickness))));
+        };
+
+        const Font& font = p_impl->m_renderToImageBuffer ? p_impl->imageBufferFont : p_impl->font;
+
         for (double x = gridCenter.x; x <= context.screenSize.x; x += 16.0)
         {
-            p_impl->render(Line{Vec2{x, 0.0}, Vec2{x, context.screenSize.y}}, 1, ColorF{0.92}.toColor());
+            p_impl->render(Line{v2(x, 0.0), v2(x, context.screenSize.y)}, lineThickness(1), ColorF{0.92}.toColor());
         }
         for (double x = gridCenter.x - 16.0; 0.0 <= x; x -= 16.0)
         {
-            p_impl->render(Line{Vec2{x, 0.0}, Vec2{x, context.screenSize.y}}, 1, ColorF{0.92}.toColor());
+            p_impl->render(Line{v2(x, 0.0), v2(x, context.screenSize.y)}, lineThickness(1), ColorF{0.92}.toColor());
         }
         for (double y = gridCenter.y; y <= context.screenSize.y; y += 16.0)
         {
-            p_impl->render(Line{Vec2{0.0, y}, Vec2{context.screenSize.x, y}}, 1, ColorF{0.92}.toColor());
+            p_impl->render(Line{v2(0.0, y), v2(context.screenSize.x, y)}, lineThickness(1), ColorF{0.92}.toColor());
         }
         for (double y = gridCenter.y - 16.0; 0.0 <= y; y -= 16.0)
         {
-            p_impl->render(Line{Vec2{0.0, y}, Vec2{context.screenSize.x, y}}, 1, ColorF{0.92}.toColor());
+            p_impl->render(Line{v2(0.0, y), v2(context.screenSize.x, y)}, lineThickness(1), ColorF{0.92}.toColor());
         }
 
-        p_impl->renderFrame(context.battlefieldArea, 4, 4, ColorF{0.1}.toColor());
+        p_impl->renderFrame(RectF{v2(context.battlefieldArea.pos), context.battlefieldArea.size * p_impl->m_imageBufferScale}, lineThickness(4), lineThickness(4), ColorF{0.1}.toColor());
 
         // 軌跡を描画
         for (size_t fighterIndex = 0; fighterIndex < p_impl->fighterTrails.size(); ++fighterIndex)
@@ -222,7 +278,7 @@ namespace toy_acai
                 const Vec2 from = context.battlefieldArea.pos + trail[i - 1].position;
                 const Vec2 to = context.battlefieldArea.pos + trail[i].position;
                 const double alpha = 0.35 * (1.0 - std::min(trail[i].age / trailDuration, 1.0));
-                p_impl->render(Line{from, to}, 2, GetTeamColor(teamId).withAlpha(alpha).toColor());
+                p_impl->render(Line{v2(from), v2(to)}, lineThickness(2), GetTeamColor(teamId).withAlpha(alpha).toColor());
             }
         }
 
@@ -236,14 +292,14 @@ namespace toy_acai
 
             const Vec2 pos = context.battlefieldArea.pos + fighter.position;
             const double yaw = fighter.yaw;
-            p_impl->renderAt(p_impl->fighterTexture, pos, yaw + Math::HalfPi, FighterSize, GetTeamColor(fighter.teamId));
+            p_impl->renderAt(p_impl->fighterTexture, v2(pos), yaw + Math::HalfPi, v1(FighterSize), GetTeamColor(fighter.teamId));
         }
 
         // ミサイルを描画
         for (const auto& missile : context.missiles)
         {
             const Vec2 pos = context.battlefieldArea.pos + missile.position;
-            p_impl->renderAt(p_impl->missileTexture, pos, missile.yaw + Math::HalfPi, MissileSize, GetTeamColor(missile.teamId));
+            p_impl->renderAt(p_impl->missileTexture, v2(pos), missile.yaw + Math::HalfPi, v1(MissileSize), GetTeamColor(missile.teamId));
         }
 
         // ファイター識別用の文字列を描画
@@ -256,7 +312,7 @@ namespace toy_acai
 
             String name = (fighter.teamId == 0 ? U"B" : U"R") + Format(fighter.memberId);
             const Vec2 pos = context.battlefieldArea.pos + fighter.position;
-            p_impl->renderAt(p_impl->font(name), pos.movedBy(0, -FighterSize * 0.75), ColorF{0.1}.toColor());
+            p_impl->renderAt(font(name), v2(pos.movedBy(0, -FighterSize * 0.75)), ColorF{0.1}.toColor());
         }
 
         // 各情報を描画
@@ -280,7 +336,7 @@ namespace toy_acai
             }
 
             String desc = U"Alive: " + Format(alive0) + U"-" + Format(alive1);
-            p_impl->renderAt(p_impl->font(desc), (context.screenSize * 0.5).withY(64.0), ColorF{0.1}.toColor());
+            p_impl->renderAt(font(desc), v2((context.screenSize * 0.5).withY(64.0)), ColorF{0.1}.toColor());
         }
     }
 }

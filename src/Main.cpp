@@ -27,7 +27,7 @@ namespace
         InitBattlefield(battlefield);
 
         BattlefieldRenderer renderer{};
-        renderer.setRenderToImageBuffer(true);
+        renderer.EnableRenderToImageBuffer(Size{1920, 1080} / 2);
 
         AnimatedGIFWriter writer{};
         if (!writer.open(outputPath, renderer.imageBuffer().size()))

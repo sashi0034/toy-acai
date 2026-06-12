@@ -43,6 +43,7 @@ From: ubuntu:22.04
     python3 -m pip install --no-cache-dir --upgrade pip
     python3 -m pip install --no-cache-dir nanobind numpy
     python3 -m pip install --no-cache-dir pillow
+    python3 -m pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu
 
     apt-get clean
     rm -rf /var/lib/apt/lists/*

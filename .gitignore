@@ -1,5 +1,7 @@
 __pycache__
 
+logs/
+
 outputs/
 
 local-scripts/

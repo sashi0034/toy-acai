@@ -9,7 +9,7 @@ from torch.distributions import Bernoulli, Normal
 
 
 class ActorCritic(nn.Module):
-    def __init__(self, obs_dim: int, hidden_dim: int = 128):
+    def __init__(self, obs_dim: int, hidden_dim: int = 128, fire_bias_init: float = 0.4):
         super().__init__()
         self.backbone = nn.Sequential(
             nn.Linear(obs_dim, hidden_dim),
@@ -21,6 +21,7 @@ class ActorCritic(nn.Module):
         self.fire_logits = nn.Linear(hidden_dim, 1)
         self.value = nn.Linear(hidden_dim, 1)
         self.log_std = nn.Parameter(torch.full((2,), -0.5))
+        nn.init.constant_(self.fire_logits.bias, fire_bias_init)
 
     def forward(self, obs: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         hidden = self.backbone(obs)
@@ -65,6 +66,7 @@ class PPOConfig:
     value_coef: float = 0.5
     entropy_coef: float = 0.01
     max_grad_norm: float = 0.5
+    fire_bias_init: float = 0.4
 
 
 class RolloutBuffer:
@@ -129,7 +131,7 @@ class PPOTrainer:
     def __init__(self, obs_dim: int, config: PPOConfig, device: torch.device):
         self.config = config
         self.device = device
-        self.model = ActorCritic(obs_dim).to(device)
+        self.model = ActorCritic(obs_dim, fire_bias_init=config.fire_bias_init).to(device)
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=config.lr)
 
     def act(self, observations: np.ndarray, deterministic: bool = False):

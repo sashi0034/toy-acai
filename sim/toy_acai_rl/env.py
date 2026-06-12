@@ -13,7 +13,10 @@ MAX_TRACKED_MISSILES = 8
 MAX_SPEED = 360.0
 OUT_OF_BOUNDS_DEATH_TIME = 3.0
 MISSILE_SEEKER_HALF_ANGLE = 0.85
-RENDER_INTERVAL = 0.5
+RENDER_INTERVAL = 0.1
+FIRE_SUCCESS_BONUS = 0.25
+MISSED_FIRE_OPPORTUNITY_PENALTY = 0.02
+BAD_FIRE_ATTEMPT_PENALTY = 0.015
 
 
 def add_default_module_paths(
@@ -216,6 +219,8 @@ class ToyAcaiPPOEnv:
                 os.chdir(self.module_dir)
         env_kwargs = {
             "render": self.render,
+            "render_width": int(1920 * 0.3),
+            "render_height": int(1080 * 0.3),
             "gif_path": (
                 str(self.gif_path) if self.render and self.gif_path is not None else ""
             ),
@@ -368,16 +373,18 @@ class ToyAcaiPPOEnv:
                 opportunities += 1
 
             if learner_actions[row, 2] < 0.5:
+                if ready:
+                    bonus -= MISSED_FIRE_OPPORTUNITY_PENALTY
                 continue
 
             attempts += 1
             if ready:
                 successes += 1
-                bonus += 0.12
+                bonus += FIRE_SUCCESS_BONUS
             else:
                 blocked_attempts += 1
                 if fighter[7] <= 0.0:
-                    bonus -= 0.01
+                    bonus -= BAD_FIRE_ATTEMPT_PENALTY
         return bonus, {
             "fire_attempts": float(attempts),
             "fire_opportunities": float(opportunities),

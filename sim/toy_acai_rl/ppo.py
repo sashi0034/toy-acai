@@ -27,11 +27,16 @@ class ActorCritic(nn.Module):
         hidden = self.backbone(obs)
         return self.mean(hidden), self.log_std.expand_as(self.mean(hidden)), self.fire_logits(hidden), self.value(hidden).squeeze(-1)
 
-    def act(self, obs: torch.Tensor, deterministic: bool = False):
+    def act(
+        self,
+        obs: torch.Tensor,
+        deterministic: bool = False,
+        fire_threshold: float = 0.5,
+    ):
         mean, log_std, fire_logits, value = self.forward(obs)
         if deterministic:
             raw_cont = mean
-            fire = (torch.sigmoid(fire_logits) >= 0.5).float()
+            fire = (torch.sigmoid(fire_logits) >= fire_threshold).float()
         else:
             raw_cont = Normal(mean, log_std.exp()).sample()
             fire = Bernoulli(logits=fire_logits).sample()
@@ -67,6 +72,7 @@ class PPOConfig:
     entropy_coef: float = 0.01
     max_grad_norm: float = 0.5
     fire_bias_init: float = 0.4
+    eval_fire_threshold: float = 0.25
 
 
 class RolloutBuffer:
@@ -137,7 +143,11 @@ class PPOTrainer:
     def act(self, observations: np.ndarray, deterministic: bool = False):
         obs_tensor = torch.as_tensor(observations, dtype=torch.float32, device=self.device)
         with torch.no_grad():
-            actions, env_actions, log_probs, _, values = self.model.act(obs_tensor, deterministic=deterministic)
+            actions, env_actions, log_probs, _, values = self.model.act(
+                obs_tensor,
+                deterministic=deterministic,
+                fire_threshold=self.config.eval_fire_threshold,
+            )
         return (
             actions.cpu().numpy(),
             env_actions.cpu().numpy(),

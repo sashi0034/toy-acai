@@ -160,7 +160,10 @@ def main():
     toy_acai_core = load_core(repo_root, args.module_dir)
     obs_dim = observation_dim(toy_acai_core)
     device = torch.device(args.device)
-    config = PPOConfig(rollout_steps=args.rollout_steps, batch_size=args.batch_size)
+    config = PPOConfig(
+        rollout_steps=args.rollout_steps,
+        batch_size=args.batch_size,
+    )
     trainer = PPOTrainer(obs_dim, config, device)
     buffer = RolloutBuffer()
 

@@ -5,6 +5,8 @@
 
 #include <array>
 
+#include "LivePPAddon.h"
+
 using namespace toy_acai;
 
 #if SIV3D_PLATFORM(LINUX)
@@ -88,6 +90,10 @@ void Main()
 #endif
 
     InitializeWindowAndScene();
+
+#if SIV3D_PLATFORM(WINDOWS) && SIV3D_BUILD(DEBUG)
+    util::InitLivePPAddon();
+#endif
 
     BattlefieldContext battlefield{};
     InitBattlefield(battlefield);

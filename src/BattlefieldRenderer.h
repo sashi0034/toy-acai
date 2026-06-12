@@ -10,7 +10,9 @@ namespace toy_acai
     public:
         BattlefieldRenderer();
 
-        void render(const BattlefieldContext& context, double deltaTime);
+        void update(const BattlefieldContext& context, double deltaTime);
+
+        void render(const BattlefieldContext& context);
 
         void EnableRenderToImageBuffer(Size size);
 

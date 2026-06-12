@@ -25,7 +25,8 @@ namespace
 
     void SimulateWithoutVideo()
     {
-        constexpr double deltaTime = 0.1;
+        float renderTime{};
+        constexpr double deltaTime = 1.0 / 60.0;
         constexpr int frameCount = 20;
         constexpr FilePathView outputPath = U"battlefield.gif";
 
@@ -41,7 +42,8 @@ namespace
             throw Error{U"Failed to open GIF writer: " + String{outputPath}};
         }
 
-        for (int frame = 0; frame < frameCount; ++frame)
+        int frame = 0;
+        do
         {
             const FighterInput input{
                 0.8,
@@ -52,13 +54,24 @@ namespace
             inputs.fill(input);
 
             UpdateBattlefield(battlefield, inputs, deltaTime);
-            renderer.render(battlefield, deltaTime);
 
-            if (!writer.writeFrame(renderer.imageBuffer(), SecondsF{deltaTime}))
+            renderer.update(battlefield, deltaTime);
+
+            renderTime += deltaTime;
+            constexpr double renderInterval = 0.1;
+            if (renderTime >= renderInterval)
             {
-                throw Error{U"Failed to write GIF frame: " + Format(frame)};
+                renderTime -= renderInterval;
+                renderer.render(battlefield);
+
+                if (!writer.writeFrame(renderer.imageBuffer(), SecondsF{deltaTime}))
+                {
+                    throw Error{U"Failed to write GIF frame: " + Format(frame)};
+                }
+
+                frame++;
             }
-        }
+        } while (frame < frameCount);
 
         if (!writer.close())
         {
@@ -95,7 +108,8 @@ void Main()
 
         UpdateBattlefield(battlefield, inputs, deltaTime);
 
-        renderer.render(battlefield, deltaTime);
+        renderer.update(battlefield, deltaTime);
+        renderer.render(battlefield);
     }
 }
 

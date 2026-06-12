@@ -191,6 +191,11 @@ namespace toy_acai
 {
     BattlefieldRenderer::BattlefieldRenderer() : p_impl(std::make_shared<Impl>()) {}
 
+    void BattlefieldRenderer::update(const BattlefieldContext& context, double deltaTime)
+    {
+        p_impl->updateTrails(context, deltaTime);
+    }
+
     void BattlefieldRenderer::EnableRenderToImageBuffer(Size size)
     {
         p_impl->m_imageBuffer = Image{size};
@@ -220,10 +225,9 @@ namespace toy_acai
         return v2(Vec2{x, y});
     }
 
-    void BattlefieldRenderer::render(const BattlefieldContext& context, double deltaTime)
+    void BattlefieldRenderer::render(const BattlefieldContext& context)
     {
         p_impl->updateImageBufferScale(context);
-        p_impl->updateTrails(context, deltaTime);
 
         // 背景を描画
         if (p_impl->m_renderToImageBuffer)

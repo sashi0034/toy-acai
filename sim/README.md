@@ -47,6 +47,13 @@ BUILD_PARALLELISM=1 ./linux-python/build-apptainer.sh
 ./local-scripts/train-ppo.sh
 ```
 
+チェックポイントから続ける場合は、例えば次のようにします:
+
+```bash
+TOY_ACAI_RESUME_CHECKPOINT=outputs/rl/default/checkpoints/ppo_002000.pt \
+./local-scripts/train-ppo.sh
+```
+
 Slack 投稿が多すぎる場合は、まず `TOY_ACAI_RENDER_EVERY` を大きくしてください。
 これは「何エピソードごとに GIF を作って Slack 送信用にスプールするか」を決めます。
 例えば `TOY_ACAI_RENDER_EVERY=100` なら 100 エピソードごとに投稿候補が作られます。

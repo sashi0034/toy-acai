@@ -17,6 +17,7 @@ RENDER_INTERVAL = 0.1
 FIRE_SUCCESS_BONUS = 0.25
 MISSED_FIRE_OPPORTUNITY_PENALTY = 0.02
 BAD_FIRE_ATTEMPT_PENALTY = 0.015
+COOLDOWN_FIRE_ATTEMPT_PENALTY = 0.002
 
 
 def add_default_module_paths(
@@ -211,6 +212,7 @@ class ToyAcaiPPOEnv:
         self.episode_fire_opportunities = 0
         self.episode_fire_successes = 0
         self.episode_blocked_fire_attempts = 0
+        self.episode_requested_fire_inputs = 0
 
     def _make_env(self):
         if self.render and self.gif_path is not None:
@@ -239,6 +241,7 @@ class ToyAcaiPPOEnv:
         self.episode_fire_opportunities = 0
         self.episode_fire_successes = 0
         self.episode_blocked_fire_attempts = 0
+        self.episode_requested_fire_inputs = 0
         return build_agent_observations(self.last_obs)
 
     def _apply_random_start(self) -> None:
@@ -256,13 +259,17 @@ class ToyAcaiPPOEnv:
         learner_indices = np.where(
             np.asarray(self.last_obs["fighters"])[:, 0] == TEAM_LEARN
         )[0]
+        prev_fighters = np.asarray(self.last_obs["fighters"], dtype=np.float64)
+        applied_learner_actions, action_info = self._apply_learner_fire_gate(
+            prev_fighters, learner_actions
+        )
         for row, fighter_idx in enumerate(learner_indices):
-            actions[fighter_idx, :] = learner_actions[row, :]
+            actions[fighter_idx, :] = applied_learner_actions[row, :]
 
         next_obs = self.env.step(actions)
         self.step_count += 1
 
-        reward, info = self._reward(self.last_obs, next_obs, learner_actions)
+        reward, info = self._reward(self.last_obs, next_obs, action_info)
         self._accumulate_fire_info(info)
         self.last_obs = next_obs
         done = bool(
@@ -293,9 +300,8 @@ class ToyAcaiPPOEnv:
         self,
         prev_obs: Dict[str, np.ndarray],
         next_obs: Dict[str, np.ndarray],
-        learner_actions: np.ndarray,
+        action_info: Dict[str, float],
     ) -> Tuple[float, Dict[str, float]]:
-        prev_fighters = np.asarray(prev_obs["fighters"], dtype=np.float64)
         next_fighters = np.asarray(next_obs["fighters"], dtype=np.float64)
         blue_alive = self._team_alive(next_fighters, TEAM_LEARN)
         red_alive = self._team_alive(next_fighters, TEAM_RULE)
@@ -307,7 +313,7 @@ class ToyAcaiPPOEnv:
         reward = float(red_losses * 5.0 - blue_losses * 5.0)
         reward -= 0.002
         reward += self._aim_bonus(next_fighters)
-        fire_bonus, fire_info = self._fire_feedback(prev_fighters, learner_actions)
+        fire_bonus, fire_info = self._fire_feedback(action_info)
         reward += fire_bonus
         reward -= self._oob_penalty(next_fighters)
 
@@ -327,11 +333,17 @@ class ToyAcaiPPOEnv:
         self.episode_blocked_fire_attempts += int(
             info.get("blocked_fire_attempts", 0.0)
         )
+        self.episode_requested_fire_inputs += int(
+            info.get("requested_fire_inputs", 0.0)
+        )
         info["episode_fire_attempts"] = float(self.episode_fire_attempts)
         info["episode_fire_opportunities"] = float(self.episode_fire_opportunities)
         info["episode_fire_successes"] = float(self.episode_fire_successes)
         info["episode_blocked_fire_attempts"] = float(
             self.episode_blocked_fire_attempts
+        )
+        info["episode_requested_fire_inputs"] = float(
+            self.episode_requested_fire_inputs
         )
 
     @staticmethod
@@ -352,44 +364,73 @@ class ToyAcaiPPOEnv:
             bonus += 0.006 * math.cos(_angle_delta(desired, float(fighter[4])))
         return bonus
 
-    @staticmethod
-    def _fire_feedback(
-        fighters: np.ndarray, learner_actions: np.ndarray
-    ) -> Tuple[float, Dict[str, float]]:
-        bonus = 0.0
-        attempts = 0
-        opportunities = 0
-        successes = 0
-        blocked_attempts = 0
+    def _apply_learner_fire_gate(
+        self, fighters: np.ndarray, learner_actions: np.ndarray
+    ) -> Tuple[np.ndarray, Dict[str, float]]:
+        applied = np.asarray(learner_actions, dtype=np.float64).copy()
         blue = fighters[(fighters[:, 0] == TEAM_LEARN)]
         red = fighters[(fighters[:, 0] == TEAM_RULE) & (fighters[:, 6] > 0.0)]
+        requested_inputs = 0
+        attempts = 0
+        opportunities = 0
+        blocked_attempts = 0
+        cooldown_blocked_attempts = 0
+
         for row, fighter in enumerate(blue):
-            if fighter[6] <= 0.0 or row >= len(learner_actions):
+            if row >= len(applied):
                 continue
 
-            has_target = ToyAcaiPPOEnv._has_fire_target(fighter, red)
-            ready = fighter[7] <= 0.0 and has_target
+            requested = bool(applied[row, 2] >= 0.5)
+            applied[row, 2] = 0.0
+            if fighter[6] <= 0.0:
+                continue
+
+            has_target = self._has_fire_target(fighter, red)
+            cooldown_ready = fighter[7] <= 0.0
+            ready = cooldown_ready and has_target
             if ready:
                 opportunities += 1
-
-            if learner_actions[row, 2] < 0.5:
-                if ready:
-                    bonus -= MISSED_FIRE_OPPORTUNITY_PENALTY
+            if not requested:
                 continue
 
-            attempts += 1
+            requested_inputs += 1
             if ready:
-                successes += 1
-                bonus += FIRE_SUCCESS_BONUS
+                attempts += 1
+                applied[row, 2] = 1.0
             else:
                 blocked_attempts += 1
-                if fighter[7] <= 0.0:
-                    bonus -= BAD_FIRE_ATTEMPT_PENALTY
-        return bonus, {
+                if not cooldown_ready:
+                    cooldown_blocked_attempts += 1
+
+        return applied, {
+            "requested_fire_inputs": float(requested_inputs),
             "fire_attempts": float(attempts),
             "fire_opportunities": float(opportunities),
-            "fire_successes": float(successes),
             "blocked_fire_attempts": float(blocked_attempts),
+            "cooldown_blocked_fire_attempts": float(cooldown_blocked_attempts),
+        }
+
+    @staticmethod
+    def _fire_feedback(action_info: Dict[str, float]) -> Tuple[float, Dict[str, float]]:
+        bonus = 0.0
+        attempts = int(action_info.get("fire_attempts", 0.0))
+        opportunities = int(action_info.get("fire_opportunities", 0.0))
+        blocked_attempts = int(action_info.get("blocked_fire_attempts", 0.0))
+        cooldown_blocked_attempts = int(
+            action_info.get("cooldown_blocked_fire_attempts", 0.0)
+        )
+        missed_opportunities = max(0, opportunities - attempts)
+        targetless_blocked_attempts = max(0, blocked_attempts - cooldown_blocked_attempts)
+
+        bonus += FIRE_SUCCESS_BONUS * attempts
+        bonus -= MISSED_FIRE_OPPORTUNITY_PENALTY * missed_opportunities
+        bonus -= BAD_FIRE_ATTEMPT_PENALTY * targetless_blocked_attempts
+        bonus -= COOLDOWN_FIRE_ATTEMPT_PENALTY * cooldown_blocked_attempts
+
+        return bonus, {
+            **action_info,
+            "fire_successes": float(attempts),
+            "missed_fire_opportunities": float(missed_opportunities),
         }
 
     @staticmethod

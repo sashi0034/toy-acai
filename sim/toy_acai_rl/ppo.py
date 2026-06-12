@@ -25,7 +25,9 @@ class ActorCritic(nn.Module):
 
     def forward(self, obs: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         hidden = self.backbone(obs)
-        return self.mean(hidden), self.log_std.expand_as(self.mean(hidden)), self.fire_logits(hidden), self.value(hidden).squeeze(-1)
+        mean = self.mean(hidden)
+        log_std = torch.clamp(self.log_std, -2.0, 0.5).expand_as(mean)
+        return mean, log_std, self.fire_logits(hidden), self.value(hidden).squeeze(-1)
 
     def act(
         self,
@@ -69,7 +71,7 @@ class PPOConfig:
     batch_size: int = 256
     rollout_steps: int = 2048
     value_coef: float = 0.5
-    entropy_coef: float = 0.01
+    entropy_coef: float = 0.003
     max_grad_norm: float = 0.5
     fire_bias_init: float = 0.4
     eval_fire_threshold: float = 0.25
@@ -205,3 +207,8 @@ class PPOTrainer:
     def save(self, path: Path, extra: Dict[str, object]) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         torch.save({"model": self.model.state_dict(), "config": self.config.__dict__, **extra}, path)
+
+    def load(self, path: Path) -> Dict[str, object]:
+        checkpoint = torch.load(path, map_location=self.device)
+        self.model.load_state_dict(checkpoint["model"])
+        return checkpoint

@@ -14,6 +14,7 @@ from toy_acai_rl.ppo import PPOConfig, PPOTrainer, RolloutBuffer
 
 
 EPISODE_INFO_METRICS = (
+    "episode_requested_fire_inputs",
     "episode_fire_attempts",
     "episode_fire_opportunities",
     "episode_fire_successes",
@@ -35,6 +36,7 @@ def parse_args():
     parser.add_argument("--batch-size", type=int, default=128)
     parser.add_argument("--random-start-steps", type=int, default=120)
     parser.add_argument("--device", default="cpu")
+    parser.add_argument("--resume-checkpoint", type=Path, default=None)
     return parser.parse_args()
 
 
@@ -148,6 +150,8 @@ def main():
     args.out_dir = args.out_dir.resolve()
     if args.module_dir is not None:
         args.module_dir = args.module_dir.resolve()
+    if args.resume_checkpoint is not None:
+        args.resume_checkpoint = args.resume_checkpoint.resolve()
     if args.slack_spool is None:
         args.slack_spool = args.out_dir / "slack"
     elif not args.slack_spool.is_absolute():
@@ -165,6 +169,15 @@ def main():
         batch_size=args.batch_size,
     )
     trainer = PPOTrainer(obs_dim, config, device)
+    start_episode = 1
+    if args.resume_checkpoint is not None:
+        checkpoint = trainer.load(args.resume_checkpoint)
+        checkpoint_obs_dim = int(checkpoint.get("obs_dim", obs_dim))
+        if checkpoint_obs_dim != obs_dim:
+            raise ValueError(
+                f"checkpoint obs_dim={checkpoint_obs_dim} does not match env obs_dim={obs_dim}"
+            )
+        start_episode = int(checkpoint.get("episode", 0)) + 1
     buffer = RolloutBuffer()
 
     args.out_dir.mkdir(parents=True, exist_ok=True)
@@ -176,7 +189,7 @@ def main():
     )
     latest_observations = train_env.reset()
 
-    for episode in range(1, args.episodes + 1):
+    for episode in range(start_episode, args.episodes + 1):
         observations, reward, info = run_episode(train_env, trainer, buffer=buffer, deterministic=False)
         latest_observations = observations
         metrics = {

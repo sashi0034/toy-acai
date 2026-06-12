@@ -13,6 +13,7 @@ MAX_TRACKED_MISSILES = 8
 MAX_SPEED = 360.0
 OUT_OF_BOUNDS_DEATH_TIME = 3.0
 MISSILE_SEEKER_HALF_ANGLE = 0.85
+RENDER_INTERVAL = 0.5
 
 
 def add_default_module_paths(
@@ -185,6 +186,7 @@ class ToyAcaiPPOEnv:
         render: bool = False,
         gif_path: Optional[Path] = None,
         module_dir: Optional[Path] = None,
+        render_interval: float = RENDER_INTERVAL,
         random_start_steps: int = 0,
         rng: Optional[np.random.Generator] = None,
     ):
@@ -195,6 +197,7 @@ class ToyAcaiPPOEnv:
         self.render = render
         self.gif_path = gif_path
         self.module_dir = module_dir
+        self.render_interval = render_interval
         self.random_start_steps = random_start_steps
         self.rng = rng if rng is not None else np.random.default_rng()
         self.env = self._make_env()
@@ -211,12 +214,14 @@ class ToyAcaiPPOEnv:
             self.gif_path.parent.mkdir(parents=True, exist_ok=True)
             if self.module_dir is not None and (self.module_dir / "resources").exists():
                 os.chdir(self.module_dir)
-        return self.core.BattlefieldEnv(
-            render=self.render,
-            gif_path=(
+        env_kwargs = {
+            "render": self.render,
+            "gif_path": (
                 str(self.gif_path) if self.render and self.gif_path is not None else ""
             ),
-        )
+            "render_interval": self.render_interval,
+        }
+        return self.core.BattlefieldEnv(**env_kwargs)
 
     def reset(self) -> np.ndarray:
         self.step_count = 0

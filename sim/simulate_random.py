@@ -7,6 +7,9 @@ from pathlib import Path
 import numpy as np
 
 
+RENDER_INTERVAL = 0.1
+
+
 def add_default_module_paths(repo_root):
     for path in (
         repo_root / "linux-python" / "build",
@@ -52,10 +55,12 @@ def main():
         args.gif.parent.mkdir(parents=True, exist_ok=True)
         if (module_dir / "resources").exists():
             os.chdir(module_dir)
-    env = toy_acai_core.BattlefieldEnv(
-        render=args.gif is not None,
-        gif_path=str(args.gif) if args.gif is not None else "",
-    )
+    env_kwargs = {
+        "render": args.gif is not None,
+        "gif_path": str(args.gif) if args.gif is not None else "",
+        "render_interval": RENDER_INTERVAL,
+    }
+    env = toy_acai_core.BattlefieldEnv(**env_kwargs)
     obs = env.reset()
     initial_obs = obs
     fighter_history = [np.array(obs["fighters"], copy=True)]
@@ -75,7 +80,7 @@ def main():
         battlefield=np.array(initial_obs["battlefield"], dtype=np.float64),
         screen_size=np.array(initial_obs["screen_size"], dtype=np.float64),
         simulation_delta_time=np.array(toy_acai_core.SIMULATION_DELTA_TIME, dtype=np.float64),
-        render_interval=np.array(toy_acai_core.RENDER_INTERVAL, dtype=np.float64),
+        render_interval=np.array(env.render_interval, dtype=np.float64),
     )
     print("saved", args.output)
 

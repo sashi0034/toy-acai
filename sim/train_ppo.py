@@ -13,6 +13,14 @@ from toy_acai_rl.env import ToyAcaiPPOEnv, load_core, observation_dim
 from toy_acai_rl.ppo import PPOConfig, PPOTrainer, RolloutBuffer
 
 
+EPISODE_INFO_METRICS = (
+    "episode_fire_attempts",
+    "episode_fire_opportunities",
+    "episode_fire_successes",
+    "episode_blocked_fire_attempts",
+)
+
+
 def parse_args():
     parser = argparse.ArgumentParser(description="Train a PPO policy for the toy-acai simulator.")
     parser.add_argument("--episodes", type=int, default=200)
@@ -49,7 +57,11 @@ def make_spool_record(spool_root: Path, gif_path: Path, metrics: dict) -> None:
         "outcome": float(metrics["outcome"]),
         "blue_alive": float(metrics["blue_alive"]),
         "red_alive": float(metrics["red_alive"]),
-        "comment": f"toy-acai PPO episode {int(metrics['episode'])}: reward={metrics['reward']:.3f}, outcome={metrics['outcome']:+.0f}",
+        "comment": (
+            f"toy-acai PPO episode {int(metrics['episode'])}: "
+            f"reward={metrics['reward']:.3f}, outcome={metrics['outcome']:+.0f}, "
+            f"fires={metrics.get('episode_fire_successes', 0):.0f}"
+        ),
     }
     tmp_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
     tmp_path.replace(final_path)
@@ -90,6 +102,11 @@ def run_episode(env: ToyAcaiPPOEnv, trainer: PPOTrainer, buffer: Optional[Rollou
     return observations, total_reward, final_info
 
 
+def add_episode_info_metrics(metrics: dict, info: dict) -> None:
+    for key in EPISODE_INFO_METRICS:
+        metrics[key] = float(info.get(key, 0.0))
+
+
 def evaluate(toy_acai_core, trainer: PPOTrainer, args, episode: int, repo_root: Path):
     media_dir = args.out_dir / "media"
     gif_path = media_dir / f"episode_{episode:06d}.gif"
@@ -118,6 +135,7 @@ def evaluate(toy_acai_core, trainer: PPOTrainer, args, episode: int, repo_root: 
         "outcome": info.get("outcome", 0.0),
         "gif": str(gif_path),
     }
+    add_episode_info_metrics(metrics, info)
     write_jsonl(args.out_dir / "eval_metrics.jsonl", metrics)
     if args.slack_spool is not None:
         make_spool_record(args.slack_spool, gif_path, metrics)
@@ -166,6 +184,7 @@ def main():
             "outcome": info.get("outcome", 0.0),
             "buffer_steps": len(buffer),
         }
+        add_episode_info_metrics(metrics, info)
         write_jsonl(args.out_dir / "train_metrics.jsonl", metrics)
         print(json.dumps(metrics, sort_keys=True), flush=True)
 

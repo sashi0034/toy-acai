@@ -7,15 +7,17 @@ from typing import Dict, Optional, Tuple
 
 import numpy as np
 
-
 TEAM_LEARN = 0
 TEAM_RULE = 1
 MAX_TRACKED_MISSILES = 8
 MAX_SPEED = 360.0
 OUT_OF_BOUNDS_DEATH_TIME = 3.0
+MISSILE_SEEKER_HALF_ANGLE = 0.85
 
 
-def add_default_module_paths(repo_root: Path, module_dir: Optional[Path] = None) -> None:
+def add_default_module_paths(
+    repo_root: Path, module_dir: Optional[Path] = None
+) -> None:
     if module_dir is not None:
         sys.path.insert(0, str(module_dir.resolve()))
     for path in (repo_root / "linux-python" / "build", repo_root / "build"):
@@ -81,7 +83,9 @@ def _edge_turn(fighter: np.ndarray, field_w: float, field_h: float) -> float:
     return float(np.clip(_angle_delta(center_yaw, float(fighter[4])) / 0.7, -1.0, 1.0))
 
 
-def build_agent_observations(obs: Dict[str, np.ndarray], learner_team: int = TEAM_LEARN) -> np.ndarray:
+def build_agent_observations(
+    obs: Dict[str, np.ndarray], learner_team: int = TEAM_LEARN
+) -> np.ndarray:
     fighters = np.asarray(obs["fighters"], dtype=np.float64)
     missiles = np.asarray(obs["missiles"], dtype=np.float64)
     field_w = float(obs["battlefield"][2])
@@ -149,7 +153,9 @@ def build_agent_observations(obs: Dict[str, np.ndarray], learner_team: int = TEA
                     1.0 if int(missile[7]) == int(agent_idx) else 0.0,
                 ]
             )
-        for _ in range(MAX_TRACKED_MISSILES - len(missile_features[:MAX_TRACKED_MISSILES])):
+        for _ in range(
+            MAX_TRACKED_MISSILES - len(missile_features[:MAX_TRACKED_MISSILES])
+        ):
             features.extend([0.0] * 8)
 
         all_obs.append(features)
@@ -195,6 +201,10 @@ class ToyAcaiPPOEnv:
         self.last_obs = None
         self.prev_blue_alive = 0
         self.prev_red_alive = 0
+        self.episode_fire_attempts = 0
+        self.episode_fire_opportunities = 0
+        self.episode_fire_successes = 0
+        self.episode_blocked_fire_attempts = 0
 
     def _make_env(self):
         if self.render and self.gif_path is not None:
@@ -203,7 +213,9 @@ class ToyAcaiPPOEnv:
                 os.chdir(self.module_dir)
         return self.core.BattlefieldEnv(
             render=self.render,
-            gif_path=str(self.gif_path) if self.render and self.gif_path is not None else "",
+            gif_path=(
+                str(self.gif_path) if self.render and self.gif_path is not None else ""
+            ),
         )
 
     def reset(self) -> np.ndarray:
@@ -213,6 +225,10 @@ class ToyAcaiPPOEnv:
         fighters = np.asarray(self.last_obs["fighters"], dtype=np.float64)
         self.prev_blue_alive = self._team_alive(fighters, TEAM_LEARN)
         self.prev_red_alive = self._team_alive(fighters, TEAM_RULE)
+        self.episode_fire_attempts = 0
+        self.episode_fire_opportunities = 0
+        self.episode_fire_successes = 0
+        self.episode_blocked_fire_attempts = 0
         return build_agent_observations(self.last_obs)
 
     def _apply_random_start(self) -> None:
@@ -227,7 +243,9 @@ class ToyAcaiPPOEnv:
             raise RuntimeError("reset() must be called before step()")
 
         actions = self.opponent.actions(self.last_obs, self.core.FIGHTER_COUNT)
-        learner_indices = np.where(np.asarray(self.last_obs["fighters"])[:, 0] == TEAM_LEARN)[0]
+        learner_indices = np.where(
+            np.asarray(self.last_obs["fighters"])[:, 0] == TEAM_LEARN
+        )[0]
         for row, fighter_idx in enumerate(learner_indices):
             actions[fighter_idx, :] = learner_actions[row, :]
 
@@ -235,8 +253,13 @@ class ToyAcaiPPOEnv:
         self.step_count += 1
 
         reward, info = self._reward(self.last_obs, next_obs, learner_actions)
+        self._accumulate_fire_info(info)
         self.last_obs = next_obs
-        done = bool(info["blue_alive"] == 0 or info["red_alive"] == 0 or self.step_count >= self.max_steps)
+        done = bool(
+            info["blue_alive"] == 0
+            or info["red_alive"] == 0
+            or self.step_count >= self.max_steps
+        )
         if done:
             if info["red_alive"] == 0 and info["blue_alive"] > 0:
                 reward += 20.0
@@ -247,7 +270,9 @@ class ToyAcaiPPOEnv:
             else:
                 info["outcome"] = 0.0
 
-        agent_rewards = np.full((self.core.TEAM_FIGHTER_COUNT,), reward, dtype=np.float32)
+        agent_rewards = np.full(
+            (self.core.TEAM_FIGHTER_COUNT,), reward, dtype=np.float32
+        )
         return StepResult(build_agent_observations(next_obs), agent_rewards, done, info)
 
     def close(self) -> None:
@@ -272,7 +297,8 @@ class ToyAcaiPPOEnv:
         reward = float(red_losses * 5.0 - blue_losses * 5.0)
         reward -= 0.002
         reward += self._aim_bonus(next_fighters)
-        reward += self._fire_bonus(prev_fighters, learner_actions)
+        fire_bonus, fire_info = self._fire_feedback(prev_fighters, learner_actions)
+        reward += fire_bonus
         reward -= self._oob_penalty(next_fighters)
 
         return reward, {
@@ -281,7 +307,22 @@ class ToyAcaiPPOEnv:
             "red_losses": float(red_losses),
             "blue_losses": float(blue_losses),
             "outcome": 0.0,
+            **fire_info,
         }
+
+    def _accumulate_fire_info(self, info: Dict[str, float]) -> None:
+        self.episode_fire_attempts += int(info.get("fire_attempts", 0.0))
+        self.episode_fire_opportunities += int(info.get("fire_opportunities", 0.0))
+        self.episode_fire_successes += int(info.get("fire_successes", 0.0))
+        self.episode_blocked_fire_attempts += int(
+            info.get("blocked_fire_attempts", 0.0)
+        )
+        info["episode_fire_attempts"] = float(self.episode_fire_attempts)
+        info["episode_fire_opportunities"] = float(self.episode_fire_opportunities)
+        info["episode_fire_successes"] = float(self.episode_fire_successes)
+        info["episode_blocked_fire_attempts"] = float(
+            self.episode_blocked_fire_attempts
+        )
 
     @staticmethod
     def _team_alive(fighters: np.ndarray, team_id: int) -> int:
@@ -302,26 +343,60 @@ class ToyAcaiPPOEnv:
         return bonus
 
     @staticmethod
-    def _fire_bonus(fighters: np.ndarray, learner_actions: np.ndarray) -> float:
+    def _fire_feedback(
+        fighters: np.ndarray, learner_actions: np.ndarray
+    ) -> Tuple[float, Dict[str, float]]:
         bonus = 0.0
+        attempts = 0
+        opportunities = 0
+        successes = 0
+        blocked_attempts = 0
         blue = fighters[(fighters[:, 0] == TEAM_LEARN)]
         red = fighters[(fighters[:, 0] == TEAM_RULE) & (fighters[:, 6] > 0.0)]
         for row, fighter in enumerate(blue):
-            if fighter[6] <= 0.0 or row >= len(learner_actions) or learner_actions[row, 2] < 0.5:
+            if fighter[6] <= 0.0 or row >= len(learner_actions):
                 continue
-            if fighter[7] > 0.0 or len(red) == 0:
-                bonus -= 0.02
+
+            has_target = ToyAcaiPPOEnv._has_fire_target(fighter, red)
+            ready = fighter[7] <= 0.0 and has_target
+            if ready:
+                opportunities += 1
+
+            if learner_actions[row, 2] < 0.5:
                 continue
-            deltas = red[:, 2:4] - fighter[2:4]
-            target = deltas[int(np.argmin(np.sum(deltas * deltas, axis=1)))]
-            desired = math.atan2(float(target[1]), float(target[0]))
-            if abs(_angle_delta(desired, float(fighter[4]))) <= 0.85:
-                bonus += 0.02
+
+            attempts += 1
+            if ready:
+                successes += 1
+                bonus += 0.12
             else:
-                bonus -= 0.02
-        return bonus
+                blocked_attempts += 1
+                if fighter[7] <= 0.0:
+                    bonus -= 0.01
+        return bonus, {
+            "fire_attempts": float(attempts),
+            "fire_opportunities": float(opportunities),
+            "fire_successes": float(successes),
+            "blocked_fire_attempts": float(blocked_attempts),
+        }
+
+    @staticmethod
+    def _has_fire_target(fighter: np.ndarray, red: np.ndarray) -> bool:
+        if len(red) == 0:
+            return False
+
+        for delta in red[:, 2:4] - fighter[2:4]:
+            desired = math.atan2(float(delta[1]), float(delta[0]))
+            if (
+                abs(_angle_delta(desired, float(fighter[4])))
+                <= MISSILE_SEEKER_HALF_ANGLE
+            ):
+                return True
+        return False
 
     @staticmethod
     def _oob_penalty(fighters: np.ndarray) -> float:
         blue = fighters[(fighters[:, 0] == TEAM_LEARN) & (fighters[:, 6] > 0.0)]
-        return float(np.sum(np.clip(blue[:, 8] / OUT_OF_BOUNDS_DEATH_TIME, 0.0, 1.0)) * 0.02)
+        return float(
+            np.sum(np.clip(blue[:, 8] / OUT_OF_BOUNDS_DEATH_TIME, 0.0, 1.0)) * 0.02
+        )

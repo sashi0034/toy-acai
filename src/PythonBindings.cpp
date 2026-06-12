@@ -27,6 +27,8 @@ namespace
 
     constexpr size_t FighterColumnCount = 9;
     constexpr size_t MissileColumnCount = 8;
+    constexpr double SimulationDeltaTime = 1.0 / 60.0;
+    constexpr double RenderInterval = 0.1;
     constexpr const char* Siv3DThreadError = "Siv3D rendering must be used from the thread that created the rendering BattlefieldEnv";
 
     [[noreturn]]
@@ -206,6 +208,7 @@ namespace
             {
                 m_renderer = toy_acai::BattlefieldRenderer{};
                 m_renderer.EnableRenderToImageBuffer(m_size);
+                m_renderTime = 0.0;
             }
             catch (const s3d::Error& error)
             {
@@ -213,16 +216,24 @@ namespace
             }
         }
 
-        void renderStep(const toy_acai::BattlefieldContext& context, double deltaTime)
+        void updateAndRenderStep(const toy_acai::BattlefieldContext& context)
         {
             assertOwnerThread();
             try
             {
-                m_renderer.render(context, deltaTime);
+                m_renderer.update(context, SimulationDeltaTime);
+                m_renderTime += SimulationDeltaTime;
+                if (m_renderTime + 1e-12 < RenderInterval)
+                {
+                    return;
+                }
+
+                m_renderTime -= RenderInterval;
+                m_renderer.render(context);
 
                 if (m_gifWriter && m_gifWriter->isOpen())
                 {
-                    if (!m_gifWriter->writeFrame(m_renderer.imageBuffer(), s3d::SecondsF{deltaTime}))
+                    if (!m_gifWriter->writeFrame(m_renderer.imageBuffer(), s3d::SecondsF{RenderInterval}))
                     {
                         throw std::runtime_error("failed to write GIF frame");
                     }
@@ -261,6 +272,7 @@ namespace
         s3d::Size m_size;
         toy_acai::BattlefieldRenderer m_renderer{};
         std::optional<s3d::AnimatedGIFWriter> m_gifWriter;
+        double m_renderTime{};
     };
 
     class BattlefieldEnv
@@ -314,13 +326,9 @@ namespace
             return observation();
         }
 
-        nb::dict step(ActionArray actions, double deltaTime)
+        nb::dict step(ActionArray actions)
         {
             assertRenderOwnerThread();
-            if (!(deltaTime > 0.0))
-            {
-                throw std::invalid_argument("deltaTime must be positive");
-            }
 
             std::array<toy_acai::FighterInput, toy_acai::FighterCount> inputs{};
             for (size_t i = 0; i < inputs.size(); ++i)
@@ -332,10 +340,10 @@ namespace
                 };
             }
 
-            toy_acai::UpdateBattlefield(m_context, inputs, deltaTime);
+            toy_acai::UpdateBattlefield(m_context, inputs, SimulationDeltaTime);
             if (m_renderSession)
             {
-                m_renderSession->renderStep(m_context, deltaTime);
+                m_renderSession->updateAndRenderStep(m_context);
             }
             return observation();
         }
@@ -392,11 +400,13 @@ NB_MODULE(toy_acai_core, m)
     m.attr("TEAM_FIGHTER_COUNT") = toy_acai::TeamFighterCount;
     m.attr("FIGHTER_COLUMNS") = FighterColumnCount;
     m.attr("MISSILE_COLUMNS") = MissileColumnCount;
+    m.attr("SIMULATION_DELTA_TIME") = SimulationDeltaTime;
+    m.attr("RENDER_INTERVAL") = RenderInterval;
 
     nb::class_<BattlefieldEnv>(m, "BattlefieldEnv")
         .def(nb::init<bool, int, int, std::string>(), "render"_a = false, "render_width"_a = 960, "render_height"_a = 540, "gif_path"_a = "")
         .def("reset", &BattlefieldEnv::reset)
-        .def("step", &BattlefieldEnv::step, "actions"_a, "dt"_a = 0.1)
+        .def("step", &BattlefieldEnv::step, "actions"_a)
         .def("close_gif", &BattlefieldEnv::closeGif)
         .def("gif_frame_count", &BattlefieldEnv::gifFrameCount);
 }

@@ -27,7 +27,6 @@ def make_actions(rng, step, fighter_count):
 def main():
     parser = argparse.ArgumentParser(description="Run a random headless toy-acai simulation from Python.")
     parser.add_argument("--steps", type=int, default=240)
-    parser.add_argument("--dt", type=float, default=0.1)
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--output", type=Path, default=Path("outputs/states.npz"))
     parser.add_argument("--gif", type=Path, default=None)
@@ -64,7 +63,7 @@ def main():
 
     for step in range(args.steps):
         actions = make_actions(rng, step, toy_acai_core.FIGHTER_COUNT)
-        obs = env.step(actions, args.dt)
+        obs = env.step(actions)
         fighter_history.append(np.array(obs["fighters"], copy=True))
         missile_counts.append(len(obs["missiles"]))
 
@@ -75,6 +74,8 @@ def main():
         missile_counts=np.array(missile_counts, dtype=np.int32),
         battlefield=np.array(initial_obs["battlefield"], dtype=np.float64),
         screen_size=np.array(initial_obs["screen_size"], dtype=np.float64),
+        simulation_delta_time=np.array(toy_acai_core.SIMULATION_DELTA_TIME, dtype=np.float64),
+        render_interval=np.array(toy_acai_core.RENDER_INTERVAL, dtype=np.float64),
     )
     print("saved", args.output)
 

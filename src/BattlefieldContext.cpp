@@ -126,11 +126,11 @@ namespace
             constexpr double turnRate = 2.0;
             fighter.yaw = NormalizeAngle(fighter.yaw + input.turn * turnRate * deltaTime);
 
-            constexpr double minimumSpeed = 50.0;
+            constexpr double minimumSpeed = 25.0;
             constexpr double fighterDrag = 0.985;
             fighter.speed *= std::pow(fighterDrag, deltaTime * 60.0);
 
-            constexpr double acceleration = 250.0;
+            constexpr double acceleration = 200.0;
             fighter.speed = std::clamp(fighter.speed + input.acceleration * acceleration * deltaTime, minimumSpeed, fighterMaxSpeed);
 
             fighter.position += Forward(fighter.yaw) * fighter.speed * deltaTime;
@@ -198,16 +198,16 @@ namespace
                 missile.lockLostTime += deltaTime;
             }
 
-            constexpr double lockLostLifetime = 1.2;
+            constexpr double lockLostLifetime = 1.1;
             if (lockLostLifetime < missile.lockLostTime)
             {
                 continue;
             }
 
-            constexpr double boostDuration = 1.0;
+            constexpr double boostDuration = 0.5;
             if (missile.age <= boostDuration)
             {
-                constexpr double boostAcceleration = 150.0;
+                constexpr double boostAcceleration = 100.0;
                 missile.speed += boostAcceleration * deltaTime;
             }
 
@@ -240,8 +240,8 @@ namespace toy_acai
             for (int member = 0; member < TeamFighterCount; ++member)
             {
                 const int index = team * TeamFighterCount + member;
-                const double x = team == 0 ? context.battlefieldArea.w * 0.22 : context.battlefieldArea.w * 0.78;
-                const double y = context.battlefieldArea.h * (member + 1.0) / (TeamFighterCount + 1.0);
+                const double x = team == 0 ? context.battlefieldArea.w * 0.1 : context.battlefieldArea.w * 0.9;
+                const double y = context.battlefieldArea.h * (team == 0 ? member + 1.0 : 3.0 * TeamFighterCount - member) / (3.0 * TeamFighterCount + 1.0);
 
                 constexpr double fighterInitialHealth = 1.0;
                 context.fighters[index] = FighterState{

@@ -4,10 +4,11 @@ set -euo pipefail
 SCRIPT_DIR=${TOY_ACAI_SCRIPT_DIR:-$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)}
 REPO_ROOT=${TOY_ACAI_REPO_ROOT:-$(cd -- "${SCRIPT_DIR}/.." && pwd)}
 
-SIV3D_ROOT=${SIV3D_ROOT:-"${REPO_ROOT}/../siv3d/OpenSiv3D"}
+SIV3D_ROOT=${SIV3D_ROOT:-"${HOME}/ws/siv3d/siv6"}
 SIV3D_APPTAINER_IMAGE=${SIV3D_APPTAINER_IMAGE:-"${HOME}/container_image/toy-acai-ubuntu22.sif"}
 BUILD_DIR=${BUILD_DIR:-"${SCRIPT_DIR}/build"}
 BUILD_PARALLELISM=${BUILD_PARALLELISM:-1}
+SLURM_LOG_DIR=${SLURM_LOG_DIR:-"${REPO_ROOT}/logs"}
 SLURM_PARTITION=${SLURM_PARTITION:-gr10561a}
 SLURM_TIME=${SLURM_TIME:-00:10:00}
 
@@ -23,6 +24,7 @@ fi
 
 if [[ -z "${SLURM_JOB_ID:-}" && -z "${TOY_ACAI_INSIDE_SLURM:-}" ]]; then
 	mkdir -p "${BUILD_DIR}"
+	mkdir -p "${SLURM_LOG_DIR}"
 	set +e
 	job_id=$(sbatch \
 		--parsable \
@@ -30,15 +32,15 @@ if [[ -z "${SLURM_JOB_ID:-}" && -z "${TOY_ACAI_INSIDE_SLURM:-}" ]]; then
 		-p "${SLURM_PARTITION}" \
 		--time="${SLURM_TIME}" \
 		--job-name=toy-acai-build \
-		--output="${BUILD_DIR}/slurm-%j.out" \
+		--output="${SLURM_LOG_DIR}/slurm-%j.out" \
 		--export=ALL,TOY_ACAI_INSIDE_SLURM=1,TOY_ACAI_SCRIPT_DIR="${SCRIPT_DIR}",TOY_ACAI_REPO_ROOT="${REPO_ROOT}",SIV3D_ROOT="${SIV3D_ROOT}",SIV3D_APPTAINER_IMAGE="${SIV3D_APPTAINER_IMAGE}",BUILD_DIR="${BUILD_DIR}",BUILD_PARALLELISM="${BUILD_PARALLELISM}" \
 		"${BASH_SOURCE[0]}")
 	status=$?
 	set -e
 
 	job_id=${job_id%%;*}
-	if [[ -n "${job_id}" && -f "${BUILD_DIR}/slurm-${job_id}.out" ]]; then
-		cat "${BUILD_DIR}/slurm-${job_id}.out"
+	if [[ -n "${job_id}" && -f "${SLURM_LOG_DIR}/slurm-${job_id}.out" ]]; then
+		cat "${SLURM_LOG_DIR}/slurm-${job_id}.out"
 	fi
 	exit "${status}"
 fi

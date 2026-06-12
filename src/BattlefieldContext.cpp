@@ -105,7 +105,7 @@ namespace
             targetIndex,
         });
 
-        constexpr double cooldown = 2.5;
+        constexpr double cooldown = 3.5;
         shooter.missileCooldown = cooldown;
     }
 

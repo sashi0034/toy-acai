@@ -23,8 +23,9 @@ def parse_args():
     parser.add_argument("--module-dir", type=Path, default=None)
     parser.add_argument("--slack-spool", type=Path, default=None)
     parser.add_argument("--seed", type=int, default=1)
-    parser.add_argument("--rollout-steps", type=int, default=2048)
-    parser.add_argument("--batch-size", type=int, default=256)
+    parser.add_argument("--rollout-steps", type=int, default=512)
+    parser.add_argument("--batch-size", type=int, default=128)
+    parser.add_argument("--random-start-steps", type=int, default=120)
     parser.add_argument("--device", default="cpu")
     return parser.parse_args()
 
@@ -49,6 +50,24 @@ def make_spool_record(spool_root: Path, gif_path: Path, metrics: dict) -> None:
         "blue_alive": float(metrics["blue_alive"]),
         "red_alive": float(metrics["red_alive"]),
         "comment": f"toy-acai PPO episode {int(metrics['episode'])}: reward={metrics['reward']:.3f}, outcome={metrics['outcome']:+.0f}",
+    }
+    tmp_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+    tmp_path.replace(final_path)
+
+
+def make_slack_thread_root_record(spool_root: Path, args) -> None:
+    pending = spool_root / "pending"
+    pending.mkdir(parents=True, exist_ok=True)
+    record_id = f"000000_thread_root_{int(time.time())}"
+    tmp_path = pending / f".{record_id}.tmp"
+    final_path = pending / f"{record_id}.json"
+    payload = {
+        "type": "thread_root",
+        "comment": (
+            "toy-acai PPO training started: "
+            f"episodes={args.episodes}, steps={args.steps}, render_every={args.render_every}, "
+            f"random_start_steps={args.random_start_steps}"
+        ),
     }
     tmp_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
     tmp_path.replace(final_path)
@@ -82,6 +101,8 @@ def evaluate(toy_acai_core, trainer: PPOTrainer, args, episode: int, repo_root: 
         render=True,
         gif_path=gif_path.resolve(),
         module_dir=module_dir,
+        random_start_steps=args.random_start_steps,
+        rng=np.random.default_rng(args.seed + episode),
     )
     try:
         _, reward, info = run_episode(env, trainer, buffer=None, deterministic=True)
@@ -113,6 +134,8 @@ def main():
         args.slack_spool = args.out_dir / "slack"
     elif not args.slack_spool.is_absolute():
         args.slack_spool = (Path.cwd() / args.slack_spool).resolve()
+    if args.slack_spool is not None:
+        make_slack_thread_root_record(args.slack_spool, args)
 
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
@@ -124,7 +147,12 @@ def main():
     buffer = RolloutBuffer()
 
     args.out_dir.mkdir(parents=True, exist_ok=True)
-    train_env = ToyAcaiPPOEnv(toy_acai_core, max_steps=args.steps)
+    train_env = ToyAcaiPPOEnv(
+        toy_acai_core,
+        max_steps=args.steps,
+        random_start_steps=args.random_start_steps,
+        rng=np.random.default_rng(args.seed),
+    )
     latest_observations = train_env.reset()
 
     for episode in range(1, args.episodes + 1):

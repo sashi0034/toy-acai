@@ -179,6 +179,8 @@ class ToyAcaiPPOEnv:
         render: bool = False,
         gif_path: Optional[Path] = None,
         module_dir: Optional[Path] = None,
+        random_start_steps: int = 0,
+        rng: Optional[np.random.Generator] = None,
     ):
         self.core = toy_acai_core
         self.max_steps = max_steps
@@ -187,6 +189,8 @@ class ToyAcaiPPOEnv:
         self.render = render
         self.gif_path = gif_path
         self.module_dir = module_dir
+        self.random_start_steps = random_start_steps
+        self.rng = rng if rng is not None else np.random.default_rng()
         self.env = self._make_env()
         self.last_obs = None
         self.prev_blue_alive = 0
@@ -205,10 +209,18 @@ class ToyAcaiPPOEnv:
     def reset(self) -> np.ndarray:
         self.step_count = 0
         self.last_obs = self.env.reset()
+        self._apply_random_start()
         fighters = np.asarray(self.last_obs["fighters"], dtype=np.float64)
         self.prev_blue_alive = self._team_alive(fighters, TEAM_LEARN)
         self.prev_red_alive = self._team_alive(fighters, TEAM_RULE)
         return build_agent_observations(self.last_obs)
+
+    def _apply_random_start(self) -> None:
+        for _ in range(max(0, self.random_start_steps)):
+            actions = np.zeros((self.core.FIGHTER_COUNT, 3), dtype=np.float64)
+            actions[:, 0] = self.rng.uniform(0.15, 0.9, size=self.core.FIGHTER_COUNT)
+            actions[:, 1] = self.rng.uniform(-1.0, 1.0, size=self.core.FIGHTER_COUNT)
+            self.last_obs = self.env.step(actions)
 
     def step(self, learner_actions: np.ndarray) -> StepResult:
         if self.last_obs is None:
@@ -222,7 +234,7 @@ class ToyAcaiPPOEnv:
         next_obs = self.env.step(actions)
         self.step_count += 1
 
-        reward, info = self._reward(self.last_obs, next_obs)
+        reward, info = self._reward(self.last_obs, next_obs, learner_actions)
         self.last_obs = next_obs
         done = bool(info["blue_alive"] == 0 or info["red_alive"] == 0 or self.step_count >= self.max_steps)
         if done:
@@ -242,7 +254,12 @@ class ToyAcaiPPOEnv:
         if self.render:
             self.env.close_gif()
 
-    def _reward(self, prev_obs: Dict[str, np.ndarray], next_obs: Dict[str, np.ndarray]) -> Tuple[float, Dict[str, float]]:
+    def _reward(
+        self,
+        prev_obs: Dict[str, np.ndarray],
+        next_obs: Dict[str, np.ndarray],
+        learner_actions: np.ndarray,
+    ) -> Tuple[float, Dict[str, float]]:
         prev_fighters = np.asarray(prev_obs["fighters"], dtype=np.float64)
         next_fighters = np.asarray(next_obs["fighters"], dtype=np.float64)
         blue_alive = self._team_alive(next_fighters, TEAM_LEARN)
@@ -255,6 +272,7 @@ class ToyAcaiPPOEnv:
         reward = float(red_losses * 5.0 - blue_losses * 5.0)
         reward -= 0.002
         reward += self._aim_bonus(next_fighters)
+        reward += self._fire_bonus(prev_fighters, learner_actions)
         reward -= self._oob_penalty(next_fighters)
 
         return reward, {
@@ -280,8 +298,27 @@ class ToyAcaiPPOEnv:
             deltas = red[:, 2:4] - fighter[2:4]
             target = deltas[int(np.argmin(np.sum(deltas * deltas, axis=1)))]
             desired = math.atan2(float(target[1]), float(target[0]))
-            if abs(_angle_delta(desired, float(fighter[4]))) < 0.45:
-                bonus += 0.01
+            bonus += 0.006 * math.cos(_angle_delta(desired, float(fighter[4])))
+        return bonus
+
+    @staticmethod
+    def _fire_bonus(fighters: np.ndarray, learner_actions: np.ndarray) -> float:
+        bonus = 0.0
+        blue = fighters[(fighters[:, 0] == TEAM_LEARN)]
+        red = fighters[(fighters[:, 0] == TEAM_RULE) & (fighters[:, 6] > 0.0)]
+        for row, fighter in enumerate(blue):
+            if fighter[6] <= 0.0 or row >= len(learner_actions) or learner_actions[row, 2] < 0.5:
+                continue
+            if fighter[7] > 0.0 or len(red) == 0:
+                bonus -= 0.02
+                continue
+            deltas = red[:, 2:4] - fighter[2:4]
+            target = deltas[int(np.argmin(np.sum(deltas * deltas, axis=1)))]
+            desired = math.atan2(float(target[1]), float(target[0]))
+            if abs(_angle_delta(desired, float(fighter[4]))) <= 0.85:
+                bonus += 0.02
+            else:
+                bonus -= 0.02
         return bonus
 
     @staticmethod

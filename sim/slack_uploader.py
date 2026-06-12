@@ -62,6 +62,14 @@ def slack_request(method: str, token: str, payload: dict) -> dict:
     return result
 
 
+def post_message(token: str, channel_id: str, text: str, thread_ts: Optional[str] = None) -> str:
+    payload = {"channel": channel_id, "text": text}
+    if thread_ts:
+        payload["thread_ts"] = thread_ts
+    result = slack_request("chat.postMessage", token, payload)
+    return result["ts"]
+
+
 def upload_bytes(url: str, file_path: Path) -> None:
     content_type = mimetypes.guess_type(str(file_path))[0] or "application/octet-stream"
     data = file_path.read_bytes()
@@ -75,14 +83,57 @@ def upload_bytes(url: str, file_path: Path) -> None:
         response.read()
 
 
-def upload_record(record_path: Path, token: str, channel_id: str, thread_ts: Optional[str], dry_run: bool) -> None:
+class SlackThread:
+    def __init__(self, spool: Path, token: str, channel_id: str, dry_run: bool):
+        self.spool = spool
+        self.token = token
+        self.channel_id = channel_id
+        self.dry_run = dry_run
+        self.state_path = spool / "thread_ts"
+        self.thread_ts = self._read_thread_ts()
+
+    def _read_thread_ts(self) -> Optional[str]:
+        if not self.state_path.exists():
+            return None
+        thread_ts = self.state_path.read_text(encoding="utf-8").strip()
+        return thread_ts or None
+
+    def _write_thread_ts(self, thread_ts: str) -> None:
+        self.spool.mkdir(parents=True, exist_ok=True)
+        tmp_path = self.state_path.with_suffix(".tmp")
+        tmp_path.write_text(f"{thread_ts}\n", encoding="utf-8")
+        tmp_path.replace(self.state_path)
+
+    def post_root(self, text: str) -> str:
+        if self.dry_run:
+            self.thread_ts = self.thread_ts or "dry-run-thread"
+            print(f"dry-run: would post thread-root to {self.channel_id}: {text}")
+            return self.thread_ts
+
+        self.thread_ts = post_message(self.token, self.channel_id, text)
+        self._write_thread_ts(self.thread_ts)
+        print(f"created Slack thread {self.thread_ts} in {self.channel_id}")
+        return self.thread_ts
+
+    def ensure(self) -> Optional[str]:
+        if self.thread_ts:
+            return self.thread_ts
+        return self.post_root("toy-acai PPO training updates")
+
+
+def upload_record(record_path: Path, token: str, channel_id: str, thread: SlackThread, dry_run: bool) -> None:
     record = json.loads(record_path.read_text(encoding="utf-8"))
+    if record.get("type") == "thread_root":
+        thread.post_root(record.get("comment", "toy-acai PPO training started"))
+        return
+
     gif_path = Path(record["gif_path"])
     if not gif_path.exists():
         raise FileNotFoundError(f"GIF does not exist: {gif_path}")
 
+    thread_ts = thread.ensure()
     if dry_run:
-        print(f"dry-run: would upload {gif_path} to {channel_id}: {record.get('comment', '')}")
+        print(f"dry-run: would upload {gif_path} to {channel_id} thread {thread_ts}: {record.get('comment', '')}")
         return
 
     upload_url = slack_request(
@@ -98,10 +149,9 @@ def upload_record(record_path: Path, token: str, channel_id: str, thread_ts: Opt
         "channel_id": channel_id,
         "initial_comment": record.get("comment", ""),
     }
-    if thread_ts:
-        complete_payload["thread_ts"] = thread_ts
+    complete_payload["thread_ts"] = thread_ts
     slack_request("files.completeUploadExternal", token, complete_payload)
-    print(f"uploaded {gif_path} to {channel_id}")
+    print(f"uploaded {gif_path} to {channel_id} thread {thread_ts}")
 
 
 def move_record(record_path: Path, destination_dir: Path) -> None:
@@ -109,7 +159,7 @@ def move_record(record_path: Path, destination_dir: Path) -> None:
     record_path.replace(destination_dir / record_path.name)
 
 
-def process_once(spool: Path, token: str, channel_id: str, thread_ts: Optional[str], dry_run: bool) -> int:
+def process_once(spool: Path, token: str, channel_id: str, thread: SlackThread, dry_run: bool) -> int:
     pending = spool / "pending"
     sent = spool / "sent"
     failed = spool / "failed"
@@ -117,7 +167,7 @@ def process_once(spool: Path, token: str, channel_id: str, thread_ts: Optional[s
     count = 0
     for record_path in sorted(pending.glob("*.json")):
         try:
-            upload_record(record_path, token, channel_id, thread_ts, dry_run)
+            upload_record(record_path, token, channel_id, thread, dry_run)
             if not dry_run:
                 move_record(record_path, sent)
         except Exception as exc:
@@ -136,14 +186,14 @@ def main():
         spool = Path(os.environ.get("TOY_ACAI_SLACK_SPOOL", "outputs/rl/default/slack"))
     token = os.environ.get("SLACK_BOT_TOKEN")
     channel_id = os.environ.get("SLACK_CHANNEL_ID")
-    thread_ts = os.environ.get("SLACK_THREAD_TS")
     if not args.dry_run and (not token or not channel_id):
         raise SystemExit("SLACK_BOT_TOKEN and SLACK_CHANNEL_ID are required unless --dry-run is used")
     token = token or "dry-run-token"
     channel_id = channel_id or "dry-run-channel"
+    thread = SlackThread(spool, token, channel_id, args.dry_run)
 
     while True:
-        processed = process_once(spool, token, channel_id, thread_ts, args.dry_run)
+        processed = process_once(spool, token, channel_id, thread, args.dry_run)
         if args.once:
             print(f"processed {processed} records")
             return

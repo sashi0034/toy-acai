@@ -54,6 +54,11 @@ TOY_ACAI_RESUME_CHECKPOINT=outputs/rl/default/checkpoints/ppo_002000.pt \
 ./local-scripts/train-ppo.sh
 ```
 
+観測特徴量や報酬設計を変えた後は、古いチェックポイントとは `obs_dim` が合わないため新規学習してください。
+現在の学習は開始時に短いルールベース模倣学習を入れて、PPO が「敵の方を向いて撃つ」初期方策から始まるようにしています。
+無効化したい場合は `TOY_ACAI_BC_STEPS=0` を指定します。
+`outputs/rl/default/checkpoints/ppo_latest.pt` は checkpoint 保存ごとにも更新されるため、途中終了後も直近の保存済み方策を参照できます。
+
 Slack 投稿が多すぎる場合は、まず `TOY_ACAI_RENDER_EVERY` を大きくしてください。
 これは「何エピソードごとに GIF を作って Slack 送信用にスプールするか」を決めます。
 例えば `TOY_ACAI_RENDER_EVERY=100` なら 100 エピソードごとに投稿候補が作られます。

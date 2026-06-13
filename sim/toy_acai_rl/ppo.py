@@ -5,11 +5,18 @@ from typing import Dict, Tuple
 import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from torch.distributions import Bernoulli, Normal
 
 
 class ActorCritic(nn.Module):
-    def __init__(self, obs_dim: int, hidden_dim: int = 128, fire_bias_init: float = 0.4):
+    def __init__(
+        self,
+        obs_dim: int,
+        hidden_dim: int = 128,
+        fire_bias_init: float = 0.4,
+        log_std_init: float = -0.8,
+    ):
         super().__init__()
         self.backbone = nn.Sequential(
             nn.Linear(obs_dim, hidden_dim),
@@ -20,13 +27,13 @@ class ActorCritic(nn.Module):
         self.mean = nn.Linear(hidden_dim, 2)
         self.fire_logits = nn.Linear(hidden_dim, 1)
         self.value = nn.Linear(hidden_dim, 1)
-        self.log_std = nn.Parameter(torch.full((2,), -0.5))
+        self.log_std = nn.Parameter(torch.full((2,), log_std_init))
         nn.init.constant_(self.fire_logits.bias, fire_bias_init)
 
     def forward(self, obs: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         hidden = self.backbone(obs)
         mean = self.mean(hidden)
-        log_std = torch.clamp(self.log_std, -2.0, 0.5).expand_as(mean)
+        log_std = torch.clamp(self.log_std, -2.5, 0.0).expand_as(mean)
         return mean, log_std, self.fire_logits(hidden), self.value(hidden).squeeze(-1)
 
     def act(
@@ -71,10 +78,12 @@ class PPOConfig:
     batch_size: int = 256
     rollout_steps: int = 2048
     value_coef: float = 0.5
-    entropy_coef: float = 0.003
+    entropy_coef: float = 0.001
     max_grad_norm: float = 0.5
     fire_bias_init: float = 0.4
-    eval_fire_threshold: float = 0.25
+    eval_fire_threshold: float = 0.15
+    hidden_dim: int = 128
+    log_std_init: float = -0.8
 
 
 class RolloutBuffer:
@@ -139,7 +148,12 @@ class PPOTrainer:
     def __init__(self, obs_dim: int, config: PPOConfig, device: torch.device):
         self.config = config
         self.device = device
-        self.model = ActorCritic(obs_dim, fire_bias_init=config.fire_bias_init).to(device)
+        self.model = ActorCritic(
+            obs_dim,
+            hidden_dim=config.hidden_dim,
+            fire_bias_init=config.fire_bias_init,
+            log_std_init=config.log_std_init,
+        ).to(device)
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=config.lr)
 
     def act(self, observations: np.ndarray, deterministic: bool = False):
@@ -166,7 +180,13 @@ class PPOTrainer:
         data = buffer.tensors(self.device, last_values, self.config)
         count = data["obs"].shape[0]
         indices = np.arange(count)
-        stats = {"policy_loss": 0.0, "value_loss": 0.0, "entropy": 0.0}
+        stats = {
+            "policy_loss": 0.0,
+            "value_loss": 0.0,
+            "entropy": 0.0,
+            "approx_kl": 0.0,
+            "clip_fraction": 0.0,
+        }
         updates = 0
 
         for _ in range(self.config.update_epochs):
@@ -181,12 +201,17 @@ class PPOTrainer:
 
                 log_probs, entropy = self.model.evaluate_actions(obs, actions)
                 values = self.model.values(obs)
-                ratio = torch.exp(log_probs - old_log_probs)
+                log_ratio = log_probs - old_log_probs
+                ratio = torch.exp(log_ratio)
                 unclipped = ratio * advantages
                 clipped = torch.clamp(ratio, 1.0 - self.config.clip, 1.0 + self.config.clip) * advantages
                 policy_loss = -torch.min(unclipped, clipped).mean()
                 value_loss = 0.5 * (returns - values).pow(2).mean()
                 entropy_mean = entropy.mean()
+                approx_kl = ((ratio - 1.0) - log_ratio).mean()
+                clip_fraction = (
+                    (torch.abs(ratio - 1.0) > self.config.clip).float().mean()
+                )
                 loss = policy_loss + self.config.value_coef * value_loss - self.config.entropy_coef * entropy_mean
 
                 self.optimizer.zero_grad()
@@ -197,6 +222,50 @@ class PPOTrainer:
                 stats["policy_loss"] += float(policy_loss.detach().cpu())
                 stats["value_loss"] += float(value_loss.detach().cpu())
                 stats["entropy"] += float(entropy_mean.detach().cpu())
+                stats["approx_kl"] += float(approx_kl.detach().cpu())
+                stats["clip_fraction"] += float(clip_fraction.detach().cpu())
+                updates += 1
+
+        if updates:
+            for key in stats:
+                stats[key] /= updates
+        stats["action_std"] = float(torch.exp(torch.clamp(self.model.log_std, -2.5, 0.0)).mean().detach().cpu())
+        return stats
+
+    def imitation_update(
+        self,
+        observations: np.ndarray,
+        target_env_actions: np.ndarray,
+        epochs: int = 4,
+        batch_size: int = 256,
+    ) -> Dict[str, float]:
+        obs = torch.as_tensor(observations, dtype=torch.float32, device=self.device)
+        targets = torch.as_tensor(target_env_actions, dtype=torch.float32, device=self.device)
+        target_cont = torch.atanh(torch.clamp(targets[:, :2], -0.999, 0.999))
+        target_fire = targets[:, 2:3]
+        indices = np.arange(obs.shape[0])
+        stats = {"bc_loss": 0.0, "bc_cont_loss": 0.0, "bc_fire_loss": 0.0}
+        updates = 0
+
+        for _ in range(epochs):
+            np.random.shuffle(indices)
+            for start in range(0, len(indices), batch_size):
+                batch_idx = torch.as_tensor(indices[start : start + batch_size], device=self.device)
+                mean, _, fire_logits, _ = self.model.forward(obs[batch_idx])
+                cont_loss = F.mse_loss(mean, target_cont[batch_idx])
+                fire_loss = F.binary_cross_entropy_with_logits(
+                    fire_logits, target_fire[batch_idx]
+                )
+                loss = cont_loss + fire_loss
+
+                self.optimizer.zero_grad()
+                loss.backward()
+                nn.utils.clip_grad_norm_(self.model.parameters(), self.config.max_grad_norm)
+                self.optimizer.step()
+
+                stats["bc_loss"] += float(loss.detach().cpu())
+                stats["bc_cont_loss"] += float(cont_loss.detach().cpu())
+                stats["bc_fire_loss"] += float(fire_loss.detach().cpu())
                 updates += 1
 
         if updates:

@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Tuple
+from typing import Dict, List, Tuple
 
 import numpy as np
 import torch
@@ -86,7 +86,7 @@ class PPOConfig:
     log_std_init: float = -0.8
 
 
-class RolloutBuffer:
+class AgentRolloutBuffer:
     def __init__(self):
         self.observations = []
         self.actions = []
@@ -98,10 +98,10 @@ class RolloutBuffer:
     def add(self, obs, action, log_prob, reward, done, value):
         self.observations.append(np.asarray(obs, dtype=np.float32))
         self.actions.append(np.asarray(action, dtype=np.float32))
-        self.log_probs.append(np.asarray(log_prob, dtype=np.float32))
-        self.rewards.append(np.asarray(reward, dtype=np.float32))
-        self.dones.append(np.full_like(np.asarray(reward, dtype=np.float32), float(done)))
-        self.values.append(np.asarray(value, dtype=np.float32))
+        self.log_probs.append(float(log_prob))
+        self.rewards.append(float(reward))
+        self.dones.append(float(done))
+        self.values.append(float(value))
 
     def __len__(self):
         return len(self.rewards)
@@ -114,7 +114,7 @@ class RolloutBuffer:
         self.dones.clear()
         self.values.clear()
 
-    def tensors(self, device: torch.device, last_values: np.ndarray, config: PPOConfig) -> Dict[str, torch.Tensor]:
+    def tensors(self, device: torch.device, last_value: float, config: PPOConfig) -> Dict[str, torch.Tensor]:
         obs = np.asarray(self.observations, dtype=np.float32)
         actions = np.asarray(self.actions, dtype=np.float32)
         old_log_probs = np.asarray(self.log_probs, dtype=np.float32)
@@ -123,28 +123,63 @@ class RolloutBuffer:
         values = np.asarray(self.values, dtype=np.float32)
 
         advantages = np.zeros_like(rewards, dtype=np.float32)
-        last_gae = np.zeros(rewards.shape[1], dtype=np.float32)
-        next_values = np.asarray(last_values, dtype=np.float32)
+        last_gae = 0.0
+        next_value = float(last_value)
         for step in reversed(range(rewards.shape[0])):
             next_nonterminal = 1.0 - dones[step]
-            delta = rewards[step] + config.gamma * next_values * next_nonterminal - values[step]
+            delta = rewards[step] + config.gamma * next_value * next_nonterminal - values[step]
             last_gae = delta + config.gamma * config.gae_lambda * next_nonterminal * last_gae
             advantages[step] = last_gae
-            next_values = values[step]
+            next_value = float(values[step])
 
         returns = advantages + values
         flat = {
-            "obs": torch.as_tensor(obs.reshape(-1, obs.shape[-1]), device=device),
-            "actions": torch.as_tensor(actions.reshape(-1, actions.shape[-1]), device=device),
-            "old_log_probs": torch.as_tensor(old_log_probs.reshape(-1), device=device),
-            "advantages": torch.as_tensor(advantages.reshape(-1), device=device),
-            "returns": torch.as_tensor(returns.reshape(-1), device=device),
+            "obs": torch.as_tensor(obs, device=device),
+            "actions": torch.as_tensor(actions, device=device),
+            "old_log_probs": torch.as_tensor(old_log_probs, device=device),
+            "advantages": torch.as_tensor(advantages, device=device),
+            "returns": torch.as_tensor(returns, device=device),
         }
         flat["advantages"] = (flat["advantages"] - flat["advantages"].mean()) / (flat["advantages"].std(unbiased=False) + 1e-8)
         return flat
 
 
-class PPOTrainer:
+class RolloutBuffer:
+    def __init__(self, agent_count: int = 4):
+        self.agent_count = agent_count
+        self.agent_buffers = [AgentRolloutBuffer() for _ in range(agent_count)]
+
+    def add(self, obs, action, log_prob, reward, done, value):
+        observations = np.asarray(obs, dtype=np.float32)
+        actions = np.asarray(action, dtype=np.float32)
+        log_probs = np.asarray(log_prob, dtype=np.float32)
+        rewards = np.asarray(reward, dtype=np.float32)
+        values = np.asarray(value, dtype=np.float32)
+        if observations.shape[0] != self.agent_count:
+            raise ValueError(
+                f"expected {self.agent_count} agent observations, got {observations.shape[0]}"
+            )
+        for agent_id in range(self.agent_count):
+            self.agent_buffers[agent_id].add(
+                observations[agent_id],
+                actions[agent_id],
+                log_probs[agent_id],
+                rewards[agent_id],
+                done,
+                values[agent_id],
+            )
+
+    def __len__(self):
+        if not self.agent_buffers:
+            return 0
+        return min(len(buffer) for buffer in self.agent_buffers)
+
+    def clear(self):
+        for buffer in self.agent_buffers:
+            buffer.clear()
+
+
+class _SingleAgentPPOTrainer:
     def __init__(self, obs_dim: int, config: PPOConfig, device: torch.device):
         self.config = config
         self.device = device
@@ -156,8 +191,12 @@ class PPOTrainer:
         ).to(device)
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=config.lr)
 
-    def act(self, observations: np.ndarray, deterministic: bool = False):
-        obs_tensor = torch.as_tensor(observations, dtype=torch.float32, device=self.device)
+    def act(self, observation: np.ndarray, deterministic: bool = False):
+        obs_tensor = torch.as_tensor(
+            np.asarray(observation, dtype=np.float32)[None, :],
+            dtype=torch.float32,
+            device=self.device,
+        )
         with torch.no_grad():
             actions, env_actions, log_probs, _, values = self.model.act(
                 obs_tensor,
@@ -165,19 +204,23 @@ class PPOTrainer:
                 fire_threshold=self.config.eval_fire_threshold,
             )
         return (
-            actions.cpu().numpy(),
-            env_actions.cpu().numpy(),
-            log_probs.cpu().numpy(),
-            values.cpu().numpy(),
+            actions[0].cpu().numpy(),
+            env_actions[0].cpu().numpy(),
+            float(log_probs[0].cpu()),
+            float(values[0].cpu()),
         )
 
-    def values(self, observations: np.ndarray) -> np.ndarray:
-        obs_tensor = torch.as_tensor(observations, dtype=torch.float32, device=self.device)
+    def value(self, observation: np.ndarray) -> float:
+        obs_tensor = torch.as_tensor(
+            np.asarray(observation, dtype=np.float32)[None, :],
+            dtype=torch.float32,
+            device=self.device,
+        )
         with torch.no_grad():
-            return self.model.values(obs_tensor).cpu().numpy()
+            return float(self.model.values(obs_tensor)[0].cpu())
 
-    def update(self, buffer: RolloutBuffer, last_values: np.ndarray) -> Dict[str, float]:
-        data = buffer.tensors(self.device, last_values, self.config)
+    def update(self, buffer: AgentRolloutBuffer, last_value: float) -> Dict[str, float]:
+        data = buffer.tensors(self.device, last_value, self.config)
         count = data["obs"].shape[0]
         indices = np.arange(count)
         stats = {
@@ -239,11 +282,11 @@ class PPOTrainer:
         epochs: int = 4,
         batch_size: int = 256,
     ) -> Dict[str, float]:
-        obs = torch.as_tensor(observations, dtype=torch.float32, device=self.device)
+        obs_tensor = torch.as_tensor(observations, dtype=torch.float32, device=self.device)
         targets = torch.as_tensor(target_env_actions, dtype=torch.float32, device=self.device)
         target_cont = torch.atanh(torch.clamp(targets[:, :2], -0.999, 0.999))
         target_fire = targets[:, 2:3]
-        indices = np.arange(obs.shape[0])
+        indices = np.arange(obs_tensor.shape[0])
         stats = {"bc_loss": 0.0, "bc_cont_loss": 0.0, "bc_fire_loss": 0.0}
         updates = 0
 
@@ -251,7 +294,7 @@ class PPOTrainer:
             np.random.shuffle(indices)
             for start in range(0, len(indices), batch_size):
                 batch_idx = torch.as_tensor(indices[start : start + batch_size], device=self.device)
-                mean, _, fire_logits, _ = self.model.forward(obs[batch_idx])
+                mean, _, fire_logits, _ = self.model.forward(obs_tensor[batch_idx])
                 cont_loss = F.mse_loss(mean, target_cont[batch_idx])
                 fire_loss = F.binary_cross_entropy_with_logits(
                     fire_logits, target_fire[batch_idx]
@@ -273,11 +316,137 @@ class PPOTrainer:
                 stats[key] /= updates
         return stats
 
+
+class PPOTrainer:
+    def __init__(
+        self,
+        obs_dim: int,
+        config: PPOConfig,
+        device: torch.device,
+        agent_count: int = 4,
+    ):
+        self.config = config
+        self.device = device
+        self.agent_count = agent_count
+        self.agents = [
+            _SingleAgentPPOTrainer(obs_dim, config, device)
+            for _ in range(agent_count)
+        ]
+
+    def act(self, observations: np.ndarray, deterministic: bool = False):
+        observations = np.asarray(observations, dtype=np.float32)
+        if observations.shape[0] != self.agent_count:
+            raise ValueError(
+                f"expected {self.agent_count} agent observations, got {observations.shape[0]}"
+            )
+        results = [
+            agent.act(observations[agent_id], deterministic=deterministic)
+            for agent_id, agent in enumerate(self.agents)
+        ]
+        actions, env_actions, log_probs, values = zip(*results)
+        return (
+            np.asarray(actions, dtype=np.float32),
+            np.asarray(env_actions, dtype=np.float32),
+            np.asarray(log_probs, dtype=np.float32),
+            np.asarray(values, dtype=np.float32),
+        )
+
+    def values(self, observations: np.ndarray) -> np.ndarray:
+        observations = np.asarray(observations, dtype=np.float32)
+        if observations.shape[0] != self.agent_count:
+            raise ValueError(
+                f"expected {self.agent_count} agent observations, got {observations.shape[0]}"
+            )
+        return np.asarray(
+            [
+                agent.value(observations[agent_id])
+                for agent_id, agent in enumerate(self.agents)
+            ],
+            dtype=np.float32,
+        )
+
+    def update(self, buffer: RolloutBuffer, last_values: np.ndarray) -> Dict[str, float]:
+        if buffer.agent_count != self.agent_count:
+            raise ValueError(
+                f"buffer agent_count={buffer.agent_count} does not match trainer agent_count={self.agent_count}"
+            )
+        last_values = np.asarray(last_values, dtype=np.float32)
+        per_agent_stats = [
+            agent.update(buffer.agent_buffers[agent_id], float(last_values[agent_id]))
+            for agent_id, agent in enumerate(self.agents)
+        ]
+        stats = self._mean_stats(per_agent_stats)
+        for agent_id, agent_stats in enumerate(per_agent_stats):
+            for key, value in agent_stats.items():
+                stats[f"agent_{agent_id}_{key}"] = float(value)
+        return stats
+
+    def imitation_update(
+        self,
+        observations: np.ndarray,
+        target_env_actions: np.ndarray,
+        epochs: int = 4,
+        batch_size: int = 256,
+    ) -> Dict[str, float]:
+        observations = np.asarray(observations, dtype=np.float32)
+        target_env_actions = np.asarray(target_env_actions, dtype=np.float32)
+        if observations.ndim != 3 or observations.shape[1] != self.agent_count:
+            raise ValueError(
+                f"expected demonstrations shaped (steps, {self.agent_count}, obs_dim), got {observations.shape}"
+            )
+        per_agent_stats = [
+            agent.imitation_update(
+                observations[:, agent_id, :],
+                target_env_actions[:, agent_id, :],
+                epochs=epochs,
+                batch_size=batch_size,
+            )
+            for agent_id, agent in enumerate(self.agents)
+        ]
+        stats = self._mean_stats(per_agent_stats)
+        for agent_id, agent_stats in enumerate(per_agent_stats):
+            for key, value in agent_stats.items():
+                stats[f"agent_{agent_id}_{key}"] = float(value)
+        return stats
+
     def save(self, path: Path, extra: Dict[str, object]) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
-        torch.save({"model": self.model.state_dict(), "config": self.config.__dict__, **extra}, path)
+        torch.save(
+            {
+                "models": [agent.model.state_dict() for agent in self.agents],
+                "agent_count": self.agent_count,
+                "config": self.config.__dict__,
+                **extra,
+            },
+            path,
+        )
 
     def load(self, path: Path) -> Dict[str, object]:
         checkpoint = torch.load(path, map_location=self.device)
-        self.model.load_state_dict(checkpoint["model"])
+        if "models" not in checkpoint:
+            raise ValueError(
+                "checkpoint uses the old single-model format; start a new run or provide a multi-agent checkpoint"
+            )
+        checkpoint_models = checkpoint["models"]
+        checkpoint_agent_count = int(checkpoint.get("agent_count", len(checkpoint_models)))
+        if checkpoint_agent_count != self.agent_count:
+            raise ValueError(
+                f"checkpoint agent_count={checkpoint_agent_count} does not match trainer agent_count={self.agent_count}"
+            )
+        if len(checkpoint_models) != self.agent_count:
+            raise ValueError(
+                f"checkpoint has {len(checkpoint_models)} models, expected {self.agent_count}"
+            )
+        for agent, state_dict in zip(self.agents, checkpoint_models):
+            agent.model.load_state_dict(state_dict)
         return checkpoint
+
+    @staticmethod
+    def _mean_stats(per_agent_stats: List[Dict[str, float]]) -> Dict[str, float]:
+        if not per_agent_stats:
+            return {}
+        keys = sorted({key for stats in per_agent_stats for key in stats})
+        return {
+            key: float(np.mean([stats[key] for stats in per_agent_stats if key in stats]))
+            for key in keys
+        }

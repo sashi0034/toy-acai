@@ -28,6 +28,11 @@ EPISODE_INFO_METRICS = (
     "reward_mean",
     "team_reward",
     "fire_reward",
+    "coordination_reward",
+    "spread_reward",
+    "ally_crowding_penalty",
+    "stagnation_penalty",
+    "max_stationary_turn_steps",
     "missed_fire_opportunities",
     "episode_requested_fire_inputs",
     "episode_fire_attempts",
@@ -216,8 +221,8 @@ def collect_expert_demonstrations(toy_acai_core, args):
         env.close()
 
     return (
-        np.asarray(observations, dtype=np.float32).reshape(-1, observations[0].shape[-1]),
-        np.asarray(target_actions, dtype=np.float32).reshape(-1, 3),
+        np.asarray(observations, dtype=np.float32),
+        np.asarray(target_actions, dtype=np.float32),
     )
 
 
@@ -253,7 +258,8 @@ def main():
         eval_fire_threshold=args.eval_fire_threshold,
         log_std_init=args.log_std_init,
     )
-    trainer = PPOTrainer(obs_dim, config, device)
+    agent_count = int(toy_acai_core.TEAM_FIGHTER_COUNT)
+    trainer = PPOTrainer(obs_dim, config, device, agent_count=agent_count)
     start_episode = 1
     if args.resume_checkpoint is not None:
         checkpoint = trainer.load(args.resume_checkpoint)
@@ -275,7 +281,7 @@ def main():
         )
         write_jsonl(args.out_dir / "bc_metrics.jsonl", bc_stats)
         print(json.dumps({"bc": bc_stats}, sort_keys=True), flush=True)
-    buffer = RolloutBuffer()
+    buffer = RolloutBuffer(agent_count=agent_count)
 
     args.out_dir.mkdir(parents=True, exist_ok=True)
     train_env = ToyAcaiPPOEnv(

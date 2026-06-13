@@ -29,6 +29,14 @@ ENGAGEMENT_CLOSING_BONUS_SCALE = 4.0
 DISTANT_LOITER_PENALTY = 0.004
 LOW_SPEED_PENALTY_SCALE = 0.003
 TURN_PENALTY_SCALE = 0.0015
+COORDINATION_SPREAD_BONUS_SCALE = 0.006
+ALLY_CROWDING_PENALTY_SCALE = 0.004
+ALLY_CROWDING_DISTANCE = 120.0
+STAGNATION_SECONDS = 3.0
+STAGNATION_RADIUS = 45.0
+STAGNATION_TURN_INPUT = 0.45
+STAGNATION_YAW_DELTA = 0.012
+STAGNATION_PENALTY = 0.03
 
 
 def add_default_module_paths(
@@ -240,6 +248,8 @@ class ToyAcaiPPOEnv:
         rng: Optional[np.random.Generator] = None,
     ):
         self.core = toy_acai_core
+        self.sim_dt = float(getattr(toy_acai_core, "SIMULATION_DELTA_TIME", 1.0 / 60.0))
+        self.stagnation_steps = max(1, int(round(STAGNATION_SECONDS / self.sim_dt)))
         self.max_steps = max_steps
         self.opponent = RuleBasedOpponent()
         self.step_count = 0
@@ -258,6 +268,8 @@ class ToyAcaiPPOEnv:
         self.episode_fire_successes = 0
         self.episode_blocked_fire_attempts = 0
         self.episode_requested_fire_inputs = 0
+        self.stagnation_anchor_positions = np.zeros((self.core.TEAM_FIGHTER_COUNT, 2), dtype=np.float64)
+        self.stationary_turn_steps = np.zeros((self.core.TEAM_FIGHTER_COUNT,), dtype=np.int32)
 
     def _make_env(self):
         if self.render and self.gif_path is not None:
@@ -287,6 +299,7 @@ class ToyAcaiPPOEnv:
         self.episode_fire_successes = 0
         self.episode_blocked_fire_attempts = 0
         self.episode_requested_fire_inputs = 0
+        self._reset_stagnation_history(fighters)
         return build_agent_observations(self.last_obs)
 
     def _apply_random_start(self) -> None:
@@ -375,11 +388,19 @@ class ToyAcaiPPOEnv:
         )
         agent_rewards += self._agent_aim_bonus(next_fighters)
         agent_rewards += self._agent_engagement_bonus(prev_fighters, next_fighters)
+        coordination_rewards, coordination_info = self._agent_coordination_rewards(
+            next_fighters
+        )
+        agent_rewards += coordination_rewards
         fire_bonus, fire_info = self._fire_feedback(action_info)
         agent_rewards += self._agent_fire_feedback(action_info, len(blue))
         agent_rewards -= self._agent_low_speed_penalty(next_fighters)
         agent_rewards -= self._agent_oob_penalty(next_fighters)
         agent_rewards -= self._turn_penalty(next_fighters, learner_actions)
+        stagnation_penalties = self._stationary_turn_penalty(
+            prev_fighters, next_fighters, learner_actions
+        )
+        agent_rewards -= stagnation_penalties
 
         return agent_rewards, {
             "blue_alive": float(blue_alive),
@@ -391,6 +412,10 @@ class ToyAcaiPPOEnv:
                 red_losses * TEAM_KILL_REWARD - blue_losses * TEAM_KILL_REWARD
             ),
             "fire_reward": float(fire_bonus),
+            "coordination_reward": float(np.mean(coordination_rewards)) if len(coordination_rewards) else 0.0,
+            "stagnation_penalty": float(np.mean(stagnation_penalties)) if len(stagnation_penalties) else 0.0,
+            "max_stationary_turn_steps": float(np.max(self.stationary_turn_steps)) if len(self.stationary_turn_steps) else 0.0,
+            **coordination_info,
             **fire_info,
         }
 
@@ -627,6 +652,135 @@ class ToyAcaiPPOEnv:
             return math.inf
         deltas = enemies[:, 2:4] - fighter[2:4]
         return math.sqrt(float(np.min(np.sum(deltas * deltas, axis=1))))
+
+    @staticmethod
+    def _agent_coordination_rewards(fighters: np.ndarray) -> Tuple[np.ndarray, Dict[str, float]]:
+        blue = fighters[fighters[:, 0] == TEAM_LEARN]
+        red = fighters[(fighters[:, 0] == TEAM_RULE) & (fighters[:, 6] > 0.0)]
+        rewards = np.zeros((len(blue),), dtype=np.float32)
+        alive_blue = blue[blue[:, 6] > 0.0]
+        if len(alive_blue) == 0:
+            return rewards, {
+                "spread_reward": 0.0,
+                "ally_crowding_penalty": 0.0,
+            }
+
+        crowding_penalties = ToyAcaiPPOEnv._ally_crowding_penalty(blue)
+        rewards -= crowding_penalties
+
+        spread_rewards = np.zeros((len(blue),), dtype=np.float32)
+        if len(red) > 0 and len(alive_blue) >= 2:
+            for target in red:
+                assigned_rows = []
+                bearings = []
+                for row, fighter in enumerate(blue):
+                    if fighter[6] <= 0.0:
+                        continue
+                    nearest_distance = ToyAcaiPPOEnv._nearest_enemy_distance(
+                        fighter, red
+                    )
+                    distance_to_target = math.hypot(
+                        float(target[2] - fighter[2]),
+                        float(target[3] - fighter[3]),
+                    )
+                    if abs(distance_to_target - nearest_distance) > 1e-6:
+                        continue
+                    assigned_rows.append(row)
+                    bearings.append(
+                        math.atan2(
+                            float(fighter[3] - target[3]),
+                            float(fighter[2] - target[2]),
+                        )
+                    )
+                if len(assigned_rows) < 2:
+                    continue
+
+                for local_index, row in enumerate(assigned_rows):
+                    nearest_delta = min(
+                        abs(_angle_delta(bearings[local_index], other_bearing))
+                        for other_index, other_bearing in enumerate(bearings)
+                        if other_index != local_index
+                    )
+                    spread = np.clip(nearest_delta / math.pi, 0.0, 1.0)
+                    spread_rewards[row] += COORDINATION_SPREAD_BONUS_SCALE * spread
+
+        rewards += spread_rewards
+        return rewards, {
+            "spread_reward": float(np.mean(spread_rewards)),
+            "ally_crowding_penalty": float(np.mean(crowding_penalties)),
+        }
+
+    @staticmethod
+    def _ally_crowding_penalty(blue: np.ndarray) -> np.ndarray:
+        penalties = np.zeros((len(blue),), dtype=np.float32)
+        for row, fighter in enumerate(blue):
+            if fighter[6] <= 0.0:
+                continue
+            for other_row, other in enumerate(blue):
+                if row == other_row or other[6] <= 0.0:
+                    continue
+                distance = math.hypot(
+                    float(other[2] - fighter[2]),
+                    float(other[3] - fighter[3]),
+                )
+                if distance < ALLY_CROWDING_DISTANCE:
+                    penalties[row] += (
+                        (ALLY_CROWDING_DISTANCE - distance)
+                        / ALLY_CROWDING_DISTANCE
+                        * ALLY_CROWDING_PENALTY_SCALE
+                    )
+        return penalties
+
+    def _reset_stagnation_history(self, fighters: np.ndarray) -> None:
+        blue = fighters[fighters[:, 0] == TEAM_LEARN]
+        self.stationary_turn_steps.fill(0)
+        self.stagnation_anchor_positions.fill(0.0)
+        count = min(len(blue), len(self.stagnation_anchor_positions))
+        if count > 0:
+            self.stagnation_anchor_positions[:count] = blue[:count, 2:4]
+
+    def _stationary_turn_penalty(
+        self,
+        prev_fighters: np.ndarray,
+        next_fighters: np.ndarray,
+        learner_actions: np.ndarray,
+    ) -> np.ndarray:
+        prev_blue = prev_fighters[prev_fighters[:, 0] == TEAM_LEARN]
+        next_blue = next_fighters[next_fighters[:, 0] == TEAM_LEARN]
+        actions = np.asarray(learner_actions, dtype=np.float64)
+        penalties = np.zeros((len(next_blue),), dtype=np.float32)
+        count = min(len(next_blue), len(prev_blue), len(actions), len(self.stationary_turn_steps))
+
+        for row in range(count):
+            fighter = next_blue[row]
+            if fighter[6] <= 0.0:
+                self.stationary_turn_steps[row] = 0
+                self.stagnation_anchor_positions[row] = fighter[2:4]
+                continue
+
+            distance_from_anchor = math.hypot(
+                float(fighter[2] - self.stagnation_anchor_positions[row, 0]),
+                float(fighter[3] - self.stagnation_anchor_positions[row, 1]),
+            )
+            yaw_delta = abs(_angle_delta(float(fighter[4]), float(prev_blue[row, 4])))
+            is_turning = (
+                abs(float(actions[row, 1])) >= STAGNATION_TURN_INPUT
+                or yaw_delta >= STAGNATION_YAW_DELTA
+            )
+            is_staying_near_anchor = distance_from_anchor <= STAGNATION_RADIUS
+
+            if is_turning and is_staying_near_anchor:
+                self.stationary_turn_steps[row] += 1
+            else:
+                self.stationary_turn_steps[row] = 0
+                self.stagnation_anchor_positions[row] = fighter[2:4]
+
+            if self.stationary_turn_steps[row] >= self.stagnation_steps:
+                overage = self.stationary_turn_steps[row] - self.stagnation_steps + 1
+                ramp = min(1.0 + overage / max(1, self.stagnation_steps), 2.0)
+                penalties[row] = STAGNATION_PENALTY * ramp
+
+        return penalties
 
     @staticmethod
     def _agent_low_speed_penalty(fighters: np.ndarray) -> np.ndarray:

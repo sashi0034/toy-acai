@@ -1,9 +1,8 @@
 import math
 import os
 import sys
-from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Optional, Tuple
+from typing import Dict, Optional
 
 import numpy as np
 
@@ -13,30 +12,7 @@ MAX_TRACKED_MISSILES = 8
 MISSILE_OBS_FEATURES = 14
 MAX_SPEED = 360.0
 OUT_OF_BOUNDS_DEATH_TIME = 3.0
-MISSILE_SEEKER_HALF_ANGLE = 0.85
 RENDER_INTERVAL = 0.1
-STEP_PENALTY = 0.002
-TEAM_KILL_REWARD = 5.0
-WIN_REWARD = 20.0
-SURVIVOR_ADVANTAGE_REWARD = 2.5
-FIRE_SUCCESS_BONUS = 0.35
-MISSED_FIRE_OPPORTUNITY_PENALTY = 0.04
-BAD_FIRE_ATTEMPT_PENALTY = 0.02
-COOLDOWN_FIRE_ATTEMPT_PENALTY = 0.003
-MIN_LEARNER_ACCELERATION = 0.10
-AIM_BONUS_SCALE = 0.006
-ENGAGEMENT_CLOSING_BONUS_SCALE = 4.0
-DISTANT_LOITER_PENALTY = 0.004
-LOW_SPEED_PENALTY_SCALE = 0.003
-TURN_PENALTY_SCALE = 0.0015
-COORDINATION_SPREAD_BONUS_SCALE = 0.006
-ALLY_CROWDING_PENALTY_SCALE = 0.004
-ALLY_CROWDING_DISTANCE = 120.0
-STAGNATION_SECONDS = 3.0
-STAGNATION_RADIUS = 45.0
-STAGNATION_TURN_INPUT = 0.45
-STAGNATION_YAW_DELTA = 0.012
-STAGNATION_PENALTY = 0.03
 
 
 def add_default_module_paths(
@@ -227,12 +203,37 @@ def observation_dim(toy_acai_core) -> int:
     return int(build_agent_observations(obs).shape[1])
 
 
-@dataclass
+def terminal_score(
+    *,
+    blue_alive: int,
+    red_alive: int,
+    episode_steps: int,
+    max_steps: int,
+    team_size: int,
+) -> float:
+    team_size = max(1, int(team_size))
+    blue_alive_ratio = float(blue_alive) / team_size
+    red_alive_ratio = float(red_alive) / team_size
+    if red_alive == 0:
+        time_bonus = 0.0
+        if max_steps > 0:
+            time_bonus = np.clip((max_steps - episode_steps) / max_steps, 0.0, 1.0)
+        return float(1.0 + 0.1 * blue_alive_ratio + 0.01 * time_bonus)
+    return float(-red_alive_ratio + 0.1 * blue_alive_ratio)
+
+
 class StepResult:
-    observations: np.ndarray
-    rewards: np.ndarray
-    done: bool
-    info: Dict[str, float]
+    def __init__(
+        self,
+        observations: np.ndarray,
+        rewards: np.ndarray,
+        done: bool,
+        info: Dict[str, float],
+    ):
+        self.observations = observations
+        self.rewards = rewards
+        self.done = done
+        self.info = info
 
 
 class ToyAcaiPPOEnv:
@@ -245,11 +246,9 @@ class ToyAcaiPPOEnv:
         module_dir: Optional[Path] = None,
         render_interval: float = RENDER_INTERVAL,
         random_start_steps: int = 0,
-        rng: Optional[np.random.Generator] = None,
+        rng: Optional[object] = None,
     ):
         self.core = toy_acai_core
-        self.sim_dt = float(getattr(toy_acai_core, "SIMULATION_DELTA_TIME", 1.0 / 60.0))
-        self.stagnation_steps = max(1, int(round(STAGNATION_SECONDS / self.sim_dt)))
         self.max_steps = max_steps
         self.opponent = RuleBasedOpponent()
         self.step_count = 0
@@ -261,15 +260,6 @@ class ToyAcaiPPOEnv:
         self.rng = rng if rng is not None else np.random.default_rng()
         self.env = self._make_env()
         self.last_obs = None
-        self.prev_blue_alive = 0
-        self.prev_red_alive = 0
-        self.episode_fire_attempts = 0
-        self.episode_fire_opportunities = 0
-        self.episode_fire_successes = 0
-        self.episode_blocked_fire_attempts = 0
-        self.episode_requested_fire_inputs = 0
-        self.stagnation_anchor_positions = np.zeros((self.core.TEAM_FIGHTER_COUNT, 2), dtype=np.float64)
-        self.stationary_turn_steps = np.zeros((self.core.TEAM_FIGHTER_COUNT,), dtype=np.int32)
 
     def _make_env(self):
         if self.render and self.gif_path is not None:
@@ -291,15 +281,6 @@ class ToyAcaiPPOEnv:
         self.step_count = 0
         self.last_obs = self.env.reset()
         self._apply_random_start()
-        fighters = np.asarray(self.last_obs["fighters"], dtype=np.float64)
-        self.prev_blue_alive = self._team_alive(fighters, TEAM_LEARN)
-        self.prev_red_alive = self._team_alive(fighters, TEAM_RULE)
-        self.episode_fire_attempts = 0
-        self.episode_fire_opportunities = 0
-        self.episode_fire_successes = 0
-        self.episode_blocked_fire_attempts = 0
-        self.episode_requested_fire_inputs = 0
-        self._reset_stagnation_history(fighters)
         return build_agent_observations(self.last_obs)
 
     def _apply_random_start(self) -> None:
@@ -317,42 +298,46 @@ class ToyAcaiPPOEnv:
         learner_indices = np.where(
             np.asarray(self.last_obs["fighters"])[:, 0] == TEAM_LEARN
         )[0]
-        prev_fighters = np.asarray(self.last_obs["fighters"], dtype=np.float64)
-        applied_learner_actions, action_info = self._apply_learner_fire_gate(
-            prev_fighters, learner_actions
-        )
-        applied_learner_actions = self._apply_learner_motion_floor(
-            prev_fighters, applied_learner_actions
-        )
+        applied_learner_actions = np.asarray(learner_actions, dtype=np.float64)
         for row, fighter_idx in enumerate(learner_indices):
+            if row >= len(applied_learner_actions):
+                break
             actions[fighter_idx, :] = applied_learner_actions[row, :]
 
         next_obs = self.env.step(actions)
         self.step_count += 1
 
-        agent_rewards, info = self._reward(
-            self.last_obs, next_obs, action_info, applied_learner_actions
-        )
-        self._accumulate_fire_info(info)
-        self.last_obs = next_obs
+        fighters = np.asarray(next_obs["fighters"], dtype=np.float64)
+        blue = fighters[fighters[:, 0] == TEAM_LEARN]
+        blue_alive = self._team_alive(fighters, TEAM_LEARN)
+        red_alive = self._team_alive(fighters, TEAM_RULE)
         done = bool(
-            info["blue_alive"] == 0
-            or info["red_alive"] == 0
+            blue_alive == 0
+            or red_alive == 0
             or self.step_count >= self.max_steps
         )
+        agent_rewards = np.zeros((len(blue),), dtype=np.float32)
+        info = {
+            "blue_alive": float(blue_alive),
+            "red_alive": float(red_alive),
+            "outcome": 0.0,
+        }
         if done:
-            if info["red_alive"] == 0 and info["blue_alive"] > 0:
-                agent_rewards += WIN_REWARD
+            score = terminal_score(
+                blue_alive=blue_alive,
+                red_alive=red_alive,
+                episode_steps=self.step_count,
+                max_steps=self.max_steps,
+                team_size=int(self.core.TEAM_FIGHTER_COUNT),
+            )
+            agent_rewards[:] = score
+            info["terminal_score"] = score
+            if red_alive == 0:
                 info["outcome"] = 1.0
-            elif info["blue_alive"] == 0 and info["red_alive"] > 0:
-                agent_rewards -= WIN_REWARD
+            elif blue_alive == 0 and red_alive > 0:
                 info["outcome"] = -1.0
-            else:
-                agent_rewards += SURVIVOR_ADVANTAGE_REWARD * (
-                    info["blue_alive"] - info["red_alive"]
-                )
-                info["outcome"] = 0.0
 
+        self.last_obs = next_obs
         info["reward_mean"] = float(np.mean(agent_rewards))
         return StepResult(
             build_agent_observations(next_obs),
@@ -365,455 +350,6 @@ class ToyAcaiPPOEnv:
         if self.render:
             self.env.close_gif()
 
-    def _reward(
-        self,
-        prev_obs: Dict[str, np.ndarray],
-        next_obs: Dict[str, np.ndarray],
-        action_info: Dict[str, object],
-        learner_actions: np.ndarray,
-    ) -> Tuple[np.ndarray, Dict[str, float]]:
-        prev_fighters = np.asarray(prev_obs["fighters"], dtype=np.float64)
-        next_fighters = np.asarray(next_obs["fighters"], dtype=np.float64)
-        blue_alive = self._team_alive(next_fighters, TEAM_LEARN)
-        red_alive = self._team_alive(next_fighters, TEAM_RULE)
-        red_losses = self.prev_red_alive - red_alive
-        blue_losses = self.prev_blue_alive - blue_alive
-        self.prev_blue_alive = blue_alive
-        self.prev_red_alive = red_alive
-
-        blue = next_fighters[next_fighters[:, 0] == TEAM_LEARN]
-        agent_rewards = np.full((len(blue),), -STEP_PENALTY, dtype=np.float32)
-        agent_rewards += float(
-            red_losses * TEAM_KILL_REWARD - blue_losses * TEAM_KILL_REWARD
-        )
-        agent_rewards += self._agent_aim_bonus(next_fighters)
-        agent_rewards += self._agent_engagement_bonus(prev_fighters, next_fighters)
-        coordination_rewards, coordination_info = self._agent_coordination_rewards(
-            next_fighters
-        )
-        agent_rewards += coordination_rewards
-        fire_bonus, fire_info = self._fire_feedback(action_info)
-        agent_rewards += self._agent_fire_feedback(action_info, len(blue))
-        agent_rewards -= self._agent_low_speed_penalty(next_fighters)
-        agent_rewards -= self._agent_oob_penalty(next_fighters)
-        agent_rewards -= self._turn_penalty(next_fighters, learner_actions)
-        stagnation_penalties = self._stationary_turn_penalty(
-            prev_fighters, next_fighters, learner_actions
-        )
-        agent_rewards -= stagnation_penalties
-
-        return agent_rewards, {
-            "blue_alive": float(blue_alive),
-            "red_alive": float(red_alive),
-            "red_losses": float(red_losses),
-            "blue_losses": float(blue_losses),
-            "outcome": 0.0,
-            "team_reward": float(
-                red_losses * TEAM_KILL_REWARD - blue_losses * TEAM_KILL_REWARD
-            ),
-            "fire_reward": float(fire_bonus),
-            "coordination_reward": float(np.mean(coordination_rewards)) if len(coordination_rewards) else 0.0,
-            "stagnation_penalty": float(np.mean(stagnation_penalties)) if len(stagnation_penalties) else 0.0,
-            "max_stationary_turn_steps": float(np.max(self.stationary_turn_steps)) if len(self.stationary_turn_steps) else 0.0,
-            **coordination_info,
-            **fire_info,
-        }
-
-    def _accumulate_fire_info(self, info: Dict[str, float]) -> None:
-        self.episode_fire_attempts += int(info.get("fire_attempts", 0.0))
-        self.episode_fire_opportunities += int(info.get("fire_opportunities", 0.0))
-        self.episode_fire_successes += int(info.get("fire_successes", 0.0))
-        self.episode_blocked_fire_attempts += int(
-            info.get("blocked_fire_attempts", 0.0)
-        )
-        self.episode_requested_fire_inputs += int(
-            info.get("requested_fire_inputs", 0.0)
-        )
-        info["episode_fire_attempts"] = float(self.episode_fire_attempts)
-        info["episode_fire_opportunities"] = float(self.episode_fire_opportunities)
-        info["episode_fire_successes"] = float(self.episode_fire_successes)
-        info["episode_blocked_fire_attempts"] = float(
-            self.episode_blocked_fire_attempts
-        )
-        info["episode_requested_fire_inputs"] = float(
-            self.episode_requested_fire_inputs
-        )
-
     @staticmethod
     def _team_alive(fighters: np.ndarray, team_id: int) -> int:
         return int(np.sum((fighters[:, 0] == team_id) & (fighters[:, 6] > 0.0)))
-
-    @staticmethod
-    def _agent_aim_bonus(fighters: np.ndarray) -> np.ndarray:
-        blue = fighters[fighters[:, 0] == TEAM_LEARN]
-        red = fighters[(fighters[:, 0] == TEAM_RULE) & (fighters[:, 6] > 0.0)]
-        rewards = np.zeros((len(blue),), dtype=np.float32)
-        if len(red) == 0:
-            return rewards
-
-        for row, fighter in enumerate(blue):
-            if fighter[6] <= 0.0:
-                continue
-            deltas = red[:, 2:4] - fighter[2:4]
-            target = deltas[int(np.argmin(np.sum(deltas * deltas, axis=1)))]
-            desired = math.atan2(float(target[1]), float(target[0]))
-            rewards[row] = AIM_BONUS_SCALE * math.cos(
-                _angle_delta(desired, float(fighter[4]))
-            )
-        return rewards
-
-    def _apply_learner_fire_gate(
-        self, fighters: np.ndarray, learner_actions: np.ndarray
-    ) -> Tuple[np.ndarray, Dict[str, object]]:
-        applied = np.asarray(learner_actions, dtype=np.float64).copy()
-        blue = fighters[(fighters[:, 0] == TEAM_LEARN)]
-        red = fighters[(fighters[:, 0] == TEAM_RULE) & (fighters[:, 6] > 0.0)]
-        requested_inputs = 0
-        attempts = 0
-        opportunities = 0
-        blocked_attempts = 0
-        cooldown_blocked_attempts = 0
-        requested_by_agent = np.zeros((len(blue),), dtype=np.float32)
-        attempts_by_agent = np.zeros((len(blue),), dtype=np.float32)
-        opportunities_by_agent = np.zeros((len(blue),), dtype=np.float32)
-        blocked_by_agent = np.zeros((len(blue),), dtype=np.float32)
-        cooldown_blocked_by_agent = np.zeros((len(blue),), dtype=np.float32)
-
-        for row, fighter in enumerate(blue):
-            if row >= len(applied):
-                continue
-
-            requested = bool(applied[row, 2] >= 0.5)
-            applied[row, 2] = 0.0
-            if fighter[6] <= 0.0:
-                continue
-
-            has_target = self._has_fire_target(fighter, red)
-            cooldown_ready = fighter[7] <= 0.0
-            ready = cooldown_ready and has_target
-            if ready:
-                opportunities += 1
-                opportunities_by_agent[row] = 1.0
-            if not requested:
-                continue
-
-            requested_inputs += 1
-            requested_by_agent[row] = 1.0
-            if ready:
-                attempts += 1
-                attempts_by_agent[row] = 1.0
-                applied[row, 2] = 1.0
-            else:
-                blocked_attempts += 1
-                blocked_by_agent[row] = 1.0
-                if not cooldown_ready:
-                    cooldown_blocked_attempts += 1
-                    cooldown_blocked_by_agent[row] = 1.0
-
-        return applied, {
-            "requested_fire_inputs": float(requested_inputs),
-            "fire_attempts": float(attempts),
-            "fire_opportunities": float(opportunities),
-            "blocked_fire_attempts": float(blocked_attempts),
-            "cooldown_blocked_fire_attempts": float(cooldown_blocked_attempts),
-            "requested_fire_inputs_by_agent": requested_by_agent,
-            "fire_attempts_by_agent": attempts_by_agent,
-            "fire_opportunities_by_agent": opportunities_by_agent,
-            "blocked_fire_attempts_by_agent": blocked_by_agent,
-            "cooldown_blocked_fire_attempts_by_agent": cooldown_blocked_by_agent,
-        }
-
-    @staticmethod
-    def _apply_learner_motion_floor(
-        fighters: np.ndarray, learner_actions: np.ndarray
-    ) -> np.ndarray:
-        applied = np.asarray(learner_actions, dtype=np.float64).copy()
-        blue = fighters[(fighters[:, 0] == TEAM_LEARN)]
-        for row, fighter in enumerate(blue):
-            if row >= len(applied) or fighter[6] <= 0.0:
-                continue
-            applied[row, 0] = max(float(applied[row, 0]), MIN_LEARNER_ACCELERATION)
-        return applied
-
-    @staticmethod
-    def _fire_feedback(action_info: Dict[str, object]) -> Tuple[float, Dict[str, float]]:
-        bonus = 0.0
-        attempts = int(action_info.get("fire_attempts", 0.0))
-        opportunities = int(action_info.get("fire_opportunities", 0.0))
-        blocked_attempts = int(action_info.get("blocked_fire_attempts", 0.0))
-        cooldown_blocked_attempts = int(
-            action_info.get("cooldown_blocked_fire_attempts", 0.0)
-        )
-        missed_opportunities = max(0, opportunities - attempts)
-        targetless_blocked_attempts = max(
-            0, blocked_attempts - cooldown_blocked_attempts
-        )
-
-        bonus += FIRE_SUCCESS_BONUS * attempts
-        bonus -= MISSED_FIRE_OPPORTUNITY_PENALTY * missed_opportunities
-        bonus -= BAD_FIRE_ATTEMPT_PENALTY * targetless_blocked_attempts
-        bonus -= COOLDOWN_FIRE_ATTEMPT_PENALTY * cooldown_blocked_attempts
-
-        public_info = {
-            key: value
-            for key, value in action_info.items()
-            if not key.endswith("_by_agent")
-        }
-        return bonus, {
-            **public_info,
-            "fire_successes": float(attempts),
-            "missed_fire_opportunities": float(missed_opportunities),
-        }
-
-    @staticmethod
-    def _agent_fire_feedback(
-        action_info: Dict[str, object], agent_count: int
-    ) -> np.ndarray:
-        def get_array(key: str) -> np.ndarray:
-            values = action_info.get(key)
-            if values is None:
-                return np.zeros((agent_count,), dtype=np.float32)
-            array = np.asarray(values, dtype=np.float32)
-            if len(array) < agent_count:
-                padded = np.zeros((agent_count,), dtype=np.float32)
-                padded[: len(array)] = array
-                return padded
-            return array[:agent_count]
-
-        attempts = get_array("fire_attempts_by_agent")
-        opportunities = get_array("fire_opportunities_by_agent")
-        blocked_attempts = get_array("blocked_fire_attempts_by_agent")
-        cooldown_blocked_attempts = get_array("cooldown_blocked_fire_attempts_by_agent")
-        missed_opportunities = np.maximum(0.0, opportunities - attempts)
-        targetless_blocked_attempts = np.maximum(
-            0.0, blocked_attempts - cooldown_blocked_attempts
-        )
-
-        return (
-            FIRE_SUCCESS_BONUS * attempts
-            - MISSED_FIRE_OPPORTUNITY_PENALTY * missed_opportunities
-            - BAD_FIRE_ATTEMPT_PENALTY * targetless_blocked_attempts
-            - COOLDOWN_FIRE_ATTEMPT_PENALTY * cooldown_blocked_attempts
-        ).astype(np.float32)
-
-    @staticmethod
-    def _has_fire_target(fighter: np.ndarray, red: np.ndarray) -> bool:
-        if len(red) == 0:
-            return False
-
-        for delta in red[:, 2:4] - fighter[2:4]:
-            desired = math.atan2(float(delta[1]), float(delta[0]))
-            if (
-                abs(_angle_delta(desired, float(fighter[4])))
-                <= MISSILE_SEEKER_HALF_ANGLE
-            ):
-                return True
-        return False
-
-    @staticmethod
-    def _agent_engagement_bonus(
-        prev_fighters: np.ndarray, next_fighters: np.ndarray
-    ) -> np.ndarray:
-        next_blue = next_fighters[next_fighters[:, 0] == TEAM_LEARN]
-        rewards = np.zeros((len(next_blue),), dtype=np.float32)
-        field_w = 1600.0
-        field_h = 900.0
-        diag = math.hypot(field_w, field_h)
-        if diag <= 0.0:
-            return rewards
-
-        prev_blue = prev_fighters[prev_fighters[:, 0] == TEAM_LEARN]
-        prev_red = prev_fighters[
-            (prev_fighters[:, 0] == TEAM_RULE) & (prev_fighters[:, 6] > 0.0)
-        ]
-        next_red = next_fighters[
-            (next_fighters[:, 0] == TEAM_RULE) & (next_fighters[:, 6] > 0.0)
-        ]
-
-        for row, fighter in enumerate(next_blue):
-            if row >= len(prev_blue) or fighter[6] <= 0.0:
-                continue
-            prev_distance = ToyAcaiPPOEnv._nearest_enemy_distance(
-                prev_blue[row], prev_red
-            )
-            next_distance = ToyAcaiPPOEnv._nearest_enemy_distance(fighter, next_red)
-            if not math.isfinite(prev_distance) or not math.isfinite(next_distance):
-                continue
-
-            closing = (prev_distance - next_distance) / diag
-            rewards[row] = ENGAGEMENT_CLOSING_BONUS_SCALE * closing
-            if next_distance > diag * 0.35 and closing <= 0.0:
-                rewards[row] -= DISTANT_LOITER_PENALTY
-        return rewards
-
-    @staticmethod
-    def _nearest_enemy_distance(fighter: np.ndarray, enemies: np.ndarray) -> float:
-        if len(enemies) == 0 or fighter[6] <= 0.0:
-            return math.inf
-        deltas = enemies[:, 2:4] - fighter[2:4]
-        return math.sqrt(float(np.min(np.sum(deltas * deltas, axis=1))))
-
-    @staticmethod
-    def _agent_coordination_rewards(fighters: np.ndarray) -> Tuple[np.ndarray, Dict[str, float]]:
-        blue = fighters[fighters[:, 0] == TEAM_LEARN]
-        red = fighters[(fighters[:, 0] == TEAM_RULE) & (fighters[:, 6] > 0.0)]
-        rewards = np.zeros((len(blue),), dtype=np.float32)
-        alive_blue = blue[blue[:, 6] > 0.0]
-        if len(alive_blue) == 0:
-            return rewards, {
-                "spread_reward": 0.0,
-                "ally_crowding_penalty": 0.0,
-            }
-
-        crowding_penalties = ToyAcaiPPOEnv._ally_crowding_penalty(blue)
-        rewards -= crowding_penalties
-
-        spread_rewards = np.zeros((len(blue),), dtype=np.float32)
-        if len(red) > 0 and len(alive_blue) >= 2:
-            for target in red:
-                assigned_rows = []
-                bearings = []
-                for row, fighter in enumerate(blue):
-                    if fighter[6] <= 0.0:
-                        continue
-                    nearest_distance = ToyAcaiPPOEnv._nearest_enemy_distance(
-                        fighter, red
-                    )
-                    distance_to_target = math.hypot(
-                        float(target[2] - fighter[2]),
-                        float(target[3] - fighter[3]),
-                    )
-                    if abs(distance_to_target - nearest_distance) > 1e-6:
-                        continue
-                    assigned_rows.append(row)
-                    bearings.append(
-                        math.atan2(
-                            float(fighter[3] - target[3]),
-                            float(fighter[2] - target[2]),
-                        )
-                    )
-                if len(assigned_rows) < 2:
-                    continue
-
-                for local_index, row in enumerate(assigned_rows):
-                    nearest_delta = min(
-                        abs(_angle_delta(bearings[local_index], other_bearing))
-                        for other_index, other_bearing in enumerate(bearings)
-                        if other_index != local_index
-                    )
-                    spread = np.clip(nearest_delta / math.pi, 0.0, 1.0)
-                    spread_rewards[row] += COORDINATION_SPREAD_BONUS_SCALE * spread
-
-        rewards += spread_rewards
-        return rewards, {
-            "spread_reward": float(np.mean(spread_rewards)),
-            "ally_crowding_penalty": float(np.mean(crowding_penalties)),
-        }
-
-    @staticmethod
-    def _ally_crowding_penalty(blue: np.ndarray) -> np.ndarray:
-        penalties = np.zeros((len(blue),), dtype=np.float32)
-        for row, fighter in enumerate(blue):
-            if fighter[6] <= 0.0:
-                continue
-            for other_row, other in enumerate(blue):
-                if row == other_row or other[6] <= 0.0:
-                    continue
-                distance = math.hypot(
-                    float(other[2] - fighter[2]),
-                    float(other[3] - fighter[3]),
-                )
-                if distance < ALLY_CROWDING_DISTANCE:
-                    penalties[row] += (
-                        (ALLY_CROWDING_DISTANCE - distance)
-                        / ALLY_CROWDING_DISTANCE
-                        * ALLY_CROWDING_PENALTY_SCALE
-                    )
-        return penalties
-
-    def _reset_stagnation_history(self, fighters: np.ndarray) -> None:
-        blue = fighters[fighters[:, 0] == TEAM_LEARN]
-        self.stationary_turn_steps.fill(0)
-        self.stagnation_anchor_positions.fill(0.0)
-        count = min(len(blue), len(self.stagnation_anchor_positions))
-        if count > 0:
-            self.stagnation_anchor_positions[:count] = blue[:count, 2:4]
-
-    def _stationary_turn_penalty(
-        self,
-        prev_fighters: np.ndarray,
-        next_fighters: np.ndarray,
-        learner_actions: np.ndarray,
-    ) -> np.ndarray:
-        prev_blue = prev_fighters[prev_fighters[:, 0] == TEAM_LEARN]
-        next_blue = next_fighters[next_fighters[:, 0] == TEAM_LEARN]
-        actions = np.asarray(learner_actions, dtype=np.float64)
-        penalties = np.zeros((len(next_blue),), dtype=np.float32)
-        count = min(len(next_blue), len(prev_blue), len(actions), len(self.stationary_turn_steps))
-
-        for row in range(count):
-            fighter = next_blue[row]
-            if fighter[6] <= 0.0:
-                self.stationary_turn_steps[row] = 0
-                self.stagnation_anchor_positions[row] = fighter[2:4]
-                continue
-
-            distance_from_anchor = math.hypot(
-                float(fighter[2] - self.stagnation_anchor_positions[row, 0]),
-                float(fighter[3] - self.stagnation_anchor_positions[row, 1]),
-            )
-            yaw_delta = abs(_angle_delta(float(fighter[4]), float(prev_blue[row, 4])))
-            is_turning = (
-                abs(float(actions[row, 1])) >= STAGNATION_TURN_INPUT
-                or yaw_delta >= STAGNATION_YAW_DELTA
-            )
-            is_staying_near_anchor = distance_from_anchor <= STAGNATION_RADIUS
-
-            if is_turning and is_staying_near_anchor:
-                self.stationary_turn_steps[row] += 1
-            else:
-                self.stationary_turn_steps[row] = 0
-                self.stagnation_anchor_positions[row] = fighter[2:4]
-
-            if self.stationary_turn_steps[row] >= self.stagnation_steps:
-                overage = self.stationary_turn_steps[row] - self.stagnation_steps + 1
-                ramp = min(1.0 + overage / max(1, self.stagnation_steps), 2.0)
-                penalties[row] = STAGNATION_PENALTY * ramp
-
-        return penalties
-
-    @staticmethod
-    def _agent_low_speed_penalty(fighters: np.ndarray) -> np.ndarray:
-        blue = fighters[fighters[:, 0] == TEAM_LEARN]
-        penalties = np.zeros((len(blue),), dtype=np.float32)
-        speed_ratio = blue[:, 5] / MAX_SPEED
-        alive = blue[:, 6] > 0.0
-        penalties[alive] = (
-            np.clip(0.25 - speed_ratio[alive], 0.0, 0.25)
-            * LOW_SPEED_PENALTY_SCALE
-        )
-        return penalties
-
-    @staticmethod
-    def _agent_oob_penalty(fighters: np.ndarray) -> np.ndarray:
-        blue = fighters[fighters[:, 0] == TEAM_LEARN]
-        penalties = (
-            np.clip(blue[:, 8] / OUT_OF_BOUNDS_DEATH_TIME, 0.0, 1.0) * 0.02
-        ).astype(np.float32)
-        penalties[blue[:, 6] <= 0.0] = 0.0
-        return penalties
-
-    @staticmethod
-    def _turn_penalty(fighters: np.ndarray, learner_actions: np.ndarray) -> np.ndarray:
-        blue = fighters[fighters[:, 0] == TEAM_LEARN]
-        actions = np.asarray(learner_actions, dtype=np.float64)
-        penalties = np.zeros((len(blue),), dtype=np.float32)
-        count = min(len(blue), len(actions))
-        if count == 0:
-            return penalties
-        alive = blue[:count, 6] > 0.0
-        penalties[:count] = (
-            np.square(np.clip(actions[:count, 1], -1.0, 1.0)) * TURN_PENALTY_SCALE
-        ).astype(np.float32)
-        penalties[np.where(~alive)[0]] = 0.0
-        return penalties

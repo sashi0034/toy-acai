@@ -10,8 +10,6 @@ import numpy as np
 import torch
 
 from toy_acai_rl.env import (
-    TEAM_LEARN,
-    RuleBasedOpponent,
     ToyAcaiPPOEnv,
     load_core,
     observation_dim,
@@ -21,24 +19,12 @@ from toy_acai_rl.ppo import PPOConfig, PPOTrainer, RolloutBuffer
 
 EPISODE_INFO_METRICS = (
     "episode_steps",
+    "terminal_score",
     "mean_accel",
     "mean_turn",
     "mean_abs_turn",
     "fire_input_rate",
     "reward_mean",
-    "team_reward",
-    "fire_reward",
-    "coordination_reward",
-    "spread_reward",
-    "ally_crowding_penalty",
-    "stagnation_penalty",
-    "max_stationary_turn_steps",
-    "missed_fire_opportunities",
-    "episode_requested_fire_inputs",
-    "episode_fire_attempts",
-    "episode_fire_opportunities",
-    "episode_fire_successes",
-    "episode_blocked_fire_attempts",
 )
 
 
@@ -57,13 +43,11 @@ def parse_args():
     parser.add_argument("--lr", type=float, default=3e-4)
     parser.add_argument("--entropy-coef", type=float, default=0.001)
     parser.add_argument("--update-epochs", type=int, default=4)
-    parser.add_argument("--gamma", type=float, default=0.99)
-    parser.add_argument("--gae-lambda", type=float, default=0.95)
+    parser.add_argument("--gamma", type=float, default=1.0)
+    parser.add_argument("--gae-lambda", type=float, default=1.0)
     parser.add_argument("--eval-fire-threshold", type=float, default=0.15)
     parser.add_argument("--fire-bias-init", type=float, default=0.4)
     parser.add_argument("--log-std-init", type=float, default=-0.8)
-    parser.add_argument("--bc-steps", type=int, default=4096)
-    parser.add_argument("--bc-epochs", type=int, default=4)
     parser.add_argument("--random-start-steps", type=int, default=120)
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--resume-checkpoint", type=Path, default=None)
@@ -92,7 +76,7 @@ def make_spool_record(spool_root: Path, gif_path: Path, metrics: dict) -> None:
         "comment": (
             f"toy-acai PPO episode {int(metrics['episode'])}: "
             f"reward={metrics['reward']:.3f}, outcome={metrics['outcome']:+.0f}, "
-            f"fires={metrics.get('episode_fire_successes', 0):.0f}"
+            f"terminal_score={metrics.get('terminal_score', 0.0):.3f}"
         ),
     }
     tmp_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
@@ -192,40 +176,6 @@ def evaluate(toy_acai_core, trainer: PPOTrainer, args, episode: int, repo_root: 
     return metrics
 
 
-def collect_expert_demonstrations(toy_acai_core, args):
-    env = ToyAcaiPPOEnv(
-        toy_acai_core,
-        max_steps=args.steps,
-        random_start_steps=args.random_start_steps,
-        rng=np.random.default_rng(args.seed + 100_000),
-    )
-    expert = RuleBasedOpponent(team_id=TEAM_LEARN)
-    observations = []
-    target_actions = []
-    obs = env.reset()
-    try:
-        for _ in range(max(0, args.bc_steps)):
-            full_actions = expert.actions(env.last_obs, toy_acai_core.FIGHTER_COUNT)
-            learner_indices = np.where(
-                np.asarray(env.last_obs["fighters"])[:, 0] == TEAM_LEARN
-            )[0]
-            learner_actions = full_actions[learner_indices]
-            observations.append(obs)
-            target_actions.append(learner_actions.astype(np.float32))
-
-            result = env.step(learner_actions)
-            obs = result.observations
-            if result.done:
-                obs = env.reset()
-    finally:
-        env.close()
-
-    return (
-        np.asarray(observations, dtype=np.float32),
-        np.asarray(target_actions, dtype=np.float32),
-    )
-
-
 def main():
     args = parse_args()
     repo_root = Path(__file__).resolve().parents[1]
@@ -269,18 +219,6 @@ def main():
                 f"checkpoint obs_dim={checkpoint_obs_dim} does not match env obs_dim={obs_dim}"
             )
         start_episode = int(checkpoint.get("episode", 0)) + 1
-    elif args.bc_steps > 0:
-        bc_observations, bc_actions = collect_expert_demonstrations(
-            toy_acai_core, args
-        )
-        bc_stats = trainer.imitation_update(
-            bc_observations,
-            bc_actions,
-            epochs=args.bc_epochs,
-            batch_size=args.batch_size,
-        )
-        write_jsonl(args.out_dir / "bc_metrics.jsonl", bc_stats)
-        print(json.dumps({"bc": bc_stats}, sort_keys=True), flush=True)
     buffer = RolloutBuffer(agent_count=agent_count)
 
     args.out_dir.mkdir(parents=True, exist_ok=True)

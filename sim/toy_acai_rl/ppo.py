@@ -5,7 +5,6 @@ from typing import Dict, List, Tuple
 import numpy as np
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 from torch.distributions import Bernoulli, Normal
 
 
@@ -70,8 +69,8 @@ class ActorCritic(nn.Module):
 
 @dataclass
 class PPOConfig:
-    gamma: float = 0.99
-    gae_lambda: float = 0.95
+    gamma: float = 1.0
+    gae_lambda: float = 1.0
     clip: float = 0.2
     lr: float = 3e-4
     update_epochs: int = 4
@@ -275,48 +274,6 @@ class _SingleAgentPPOTrainer:
         stats["action_std"] = float(torch.exp(torch.clamp(self.model.log_std, -2.5, 0.0)).mean().detach().cpu())
         return stats
 
-    def imitation_update(
-        self,
-        observations: np.ndarray,
-        target_env_actions: np.ndarray,
-        epochs: int = 4,
-        batch_size: int = 256,
-    ) -> Dict[str, float]:
-        obs_tensor = torch.as_tensor(observations, dtype=torch.float32, device=self.device)
-        targets = torch.as_tensor(target_env_actions, dtype=torch.float32, device=self.device)
-        target_cont = torch.atanh(torch.clamp(targets[:, :2], -0.999, 0.999))
-        target_fire = targets[:, 2:3]
-        indices = np.arange(obs_tensor.shape[0])
-        stats = {"bc_loss": 0.0, "bc_cont_loss": 0.0, "bc_fire_loss": 0.0}
-        updates = 0
-
-        for _ in range(epochs):
-            np.random.shuffle(indices)
-            for start in range(0, len(indices), batch_size):
-                batch_idx = torch.as_tensor(indices[start : start + batch_size], device=self.device)
-                mean, _, fire_logits, _ = self.model.forward(obs_tensor[batch_idx])
-                cont_loss = F.mse_loss(mean, target_cont[batch_idx])
-                fire_loss = F.binary_cross_entropy_with_logits(
-                    fire_logits, target_fire[batch_idx]
-                )
-                loss = cont_loss + fire_loss
-
-                self.optimizer.zero_grad()
-                loss.backward()
-                nn.utils.clip_grad_norm_(self.model.parameters(), self.config.max_grad_norm)
-                self.optimizer.step()
-
-                stats["bc_loss"] += float(loss.detach().cpu())
-                stats["bc_cont_loss"] += float(cont_loss.detach().cpu())
-                stats["bc_fire_loss"] += float(fire_loss.detach().cpu())
-                updates += 1
-
-        if updates:
-            for key in stats:
-                stats[key] /= updates
-        return stats
-
-
 class PPOTrainer:
     def __init__(
         self,
@@ -373,34 +330,6 @@ class PPOTrainer:
         last_values = np.asarray(last_values, dtype=np.float32)
         per_agent_stats = [
             agent.update(buffer.agent_buffers[agent_id], float(last_values[agent_id]))
-            for agent_id, agent in enumerate(self.agents)
-        ]
-        stats = self._mean_stats(per_agent_stats)
-        for agent_id, agent_stats in enumerate(per_agent_stats):
-            for key, value in agent_stats.items():
-                stats[f"agent_{agent_id}_{key}"] = float(value)
-        return stats
-
-    def imitation_update(
-        self,
-        observations: np.ndarray,
-        target_env_actions: np.ndarray,
-        epochs: int = 4,
-        batch_size: int = 256,
-    ) -> Dict[str, float]:
-        observations = np.asarray(observations, dtype=np.float32)
-        target_env_actions = np.asarray(target_env_actions, dtype=np.float32)
-        if observations.ndim != 3 or observations.shape[1] != self.agent_count:
-            raise ValueError(
-                f"expected demonstrations shaped (steps, {self.agent_count}, obs_dim), got {observations.shape}"
-            )
-        per_agent_stats = [
-            agent.imitation_update(
-                observations[:, agent_id, :],
-                target_env_actions[:, agent_id, :],
-                epochs=epochs,
-                batch_size=batch_size,
-            )
             for agent_id, agent in enumerate(self.agents)
         ]
         stats = self._mean_stats(per_agent_stats)

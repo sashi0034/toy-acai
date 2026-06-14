@@ -41,7 +41,7 @@ BUILD_PARALLELISM=1 ./linux-python/build-apptainer.sh
 
 ```bash
 # smoke run の場合、以下のような設定が必要です
-# TOY_ACAI_EPISODES=2 TOY_ACAI_STEPS=20 TOY_ACAI_RENDER_EVERY=1 \
+# TOY_ACAI_EPISODES=2 TOY_ACAI_STEPS=20 TOY_ACAI_RENDER_EVERY=0 \
 # TOY_ACAI_ROLLOUT_STEPS=8 TOY_ACAI_BATCH_SIZE=8 \
 
 ./local-scripts/train-ppo.sh
@@ -54,9 +54,8 @@ TOY_ACAI_RESUME_CHECKPOINT=outputs/rl/default/checkpoints/ppo_002000.pt \
 ./local-scripts/train-ppo.sh
 ```
 
-観測特徴量や報酬設計を変えた後は、古いチェックポイントとは `obs_dim` が合わないため新規学習してください。
-現在の学習は開始時に短いルールベース模倣学習を入れて、PPO が「敵の方を向いて撃つ」初期方策から始まるようにしています。
-無効化したい場合は `TOY_ACAI_BC_STEPS=0` を指定します。
+観測特徴量や報酬設計を変えた後は、新規学習してください。
+現在の学習は途中状態のルールベース報酬を使わず、エピソード終端の `red_alive`、`blue_alive`、終了ステップだけを報酬にします。
 `outputs/rl/default/checkpoints/ppo_latest.pt` は checkpoint 保存ごとにも更新されるため、途中終了後も直近の保存済み方策を参照できます。
 
 Slack 投稿が多すぎる場合は、まず `TOY_ACAI_RENDER_EVERY` を大きくしてください。

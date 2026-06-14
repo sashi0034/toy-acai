@@ -55,7 +55,8 @@ TOY_ACAI_RESUME_CHECKPOINT=outputs/rl/default/checkpoints/ppo_002000.pt \
 ```
 
 観測特徴量や報酬設計を変えた後は、新規学習してください。
-現在の学習は途中状態のルールベース報酬を使わず、エピソード終端の `red_alive`、`blue_alive`、終了ステップだけを報酬にします。
+現在の学習はエピソード終端の `red_alive`、`blue_alive`、終了ステップから計算する勝敗スコアを主報酬にします。
+加えて各 Blue 機体に、step ごとの生存補助報酬と、自機のミサイルで Red 機体を撃墜したときの補助報酬を与えます。
 `outputs/rl/default/checkpoints/ppo_latest.pt` は checkpoint 保存ごとにも更新されるため、途中終了後も直近の保存済み方策を参照できます。
 
 Slack 投稿が多すぎる場合は、まず `TOY_ACAI_RENDER_EVERY` を大きくしてください。

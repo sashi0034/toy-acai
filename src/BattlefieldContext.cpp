@@ -102,6 +102,7 @@ namespace
             0.0,
             0.0,
             shooter.teamId,
+            shooterIndex,
             targetIndex,
         });
 
@@ -216,6 +217,12 @@ namespace
             constexpr double hitRadius = MissileSize;
             if (targetAlive && DistanceSq(missile.position, target->position) <= hitRadius * hitRadius)
             {
+                context.hitEvents.push_back(HitEvent{
+                    missile.shooterFighterIndex,
+                    missile.teamId,
+                    missile.targetFighterIndex,
+                    target->teamId,
+                });
                 target->health = 0.0;
                 continue;
             }
@@ -234,6 +241,7 @@ namespace toy_acai
         context.screenSize = {1920, 1080};
         context.battlefieldArea = RectF{Arg::center = context.screenSize * 0.5f, Vec2{1600, 900}};
         context.missiles.clear();
+        context.hitEvents.clear();
 
         for (int team = 0; team < TeamCount; ++team)
         {
@@ -260,6 +268,8 @@ namespace toy_acai
 
     void UpdateBattlefield(BattlefieldContext& context, const std::array<FighterInput, FighterCount>& inputs, double deltaTime)
     {
+        context.hitEvents.clear();
+
         UpdateFighters(context, inputs, deltaTime);
 
         UpdateMissiles(context, deltaTime);

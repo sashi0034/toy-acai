@@ -25,6 +25,10 @@ EPISODE_INFO_METRICS = (
     "mean_abs_turn",
     "fire_input_rate",
     "reward_mean",
+    "survival_reward",
+    "kill_reward",
+    "blue_kills",
+    "hit_events",
 )
 
 

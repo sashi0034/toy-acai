@@ -28,6 +28,7 @@ namespace
 
     constexpr size_t FighterColumnCount = 9;
     constexpr size_t MissileColumnCount = 8;
+    constexpr size_t HitEventColumnCount = 4;
     constexpr double SimulationDeltaTime = 1.0 / 60.0;
     constexpr double DefaultRenderInterval = 0.1;
     constexpr const char* Siv3DThreadError = "Siv3D rendering must be used from the thread that created the rendering BattlefieldEnv";
@@ -83,6 +84,22 @@ namespace
             (*values)[offset + 7] = static_cast<double>(missile.targetFighterIndex);
         }
         return MakeMatrix(values, rows, MissileColumnCount);
+    }
+
+    Matrix MakeHitEventMatrix(const toy_acai::BattlefieldContext& context)
+    {
+        const size_t rows = context.hitEvents.size();
+        auto* values = new std::vector<double>(std::max<size_t>(1, rows * HitEventColumnCount));
+        for (size_t i = 0; i < rows; ++i)
+        {
+            const auto& hitEvent = context.hitEvents[i];
+            const size_t offset = i * HitEventColumnCount;
+            (*values)[offset + 0] = static_cast<double>(hitEvent.shooterFighterIndex);
+            (*values)[offset + 1] = static_cast<double>(hitEvent.shooterTeam);
+            (*values)[offset + 2] = static_cast<double>(hitEvent.targetFighterIndex);
+            (*values)[offset + 3] = static_cast<double>(hitEvent.targetTeam);
+        }
+        return MakeMatrix(values, rows, HitEventColumnCount);
     }
 
     class Siv3DRuntime
@@ -392,6 +409,7 @@ namespace
             nb::dict result;
             result["fighters"] = MakeFighterMatrix(m_context);
             result["missiles"] = MakeMissileMatrix(m_context);
+            result["hit_events"] = MakeHitEventMatrix(m_context);
             result["screen_size"] = nb::make_tuple(m_context.screenSize.x, m_context.screenSize.y);
             result["battlefield"] = nb::make_tuple(
                 m_context.battlefieldArea.x,
@@ -402,6 +420,7 @@ namespace
             result["fighter_count"] = toy_acai::FighterCount;
             result["fighter_columns"] = FighterColumnCount;
             result["missile_columns"] = MissileColumnCount;
+            result["hit_event_columns"] = HitEventColumnCount;
             return result;
         }
 
@@ -419,6 +438,7 @@ NB_MODULE(toy_acai_core, m)
     m.attr("TEAM_FIGHTER_COUNT") = toy_acai::TeamFighterCount;
     m.attr("FIGHTER_COLUMNS") = FighterColumnCount;
     m.attr("MISSILE_COLUMNS") = MissileColumnCount;
+    m.attr("HIT_EVENT_COLUMNS") = HitEventColumnCount;
     m.attr("SIMULATION_DELTA_TIME") = SimulationDeltaTime;
     m.attr("RENDER_INTERVAL") = DefaultRenderInterval;
 

@@ -2,7 +2,7 @@ import math
 import os
 import sys
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, Optional, Tuple
 
 import numpy as np
 
@@ -13,6 +13,8 @@ MISSILE_OBS_FEATURES = 14
 MAX_SPEED = 360.0
 OUT_OF_BOUNDS_DEATH_TIME = 3.0
 RENDER_INTERVAL = 0.1
+AUX_KILL_REWARD = 0.25
+AUX_SURVIVAL_REWARD_PER_STEP = 0.001
 
 
 def add_default_module_paths(
@@ -222,6 +224,53 @@ def terminal_score(
     return float(-red_alive_ratio + 0.1 * blue_alive_ratio)
 
 
+def auxiliary_agent_rewards(
+    obs: Dict[str, np.ndarray],
+    learner_team: int = TEAM_LEARN,
+    opponent_team: int = TEAM_RULE,
+    kill_reward: float = AUX_KILL_REWARD,
+    survival_reward_per_step: float = AUX_SURVIVAL_REWARD_PER_STEP,
+) -> Tuple[np.ndarray, Dict[str, float]]:
+    fighters = np.asarray(obs["fighters"], dtype=np.float64)
+    hit_events = np.asarray(
+        obs.get("hit_events", np.zeros((0, 4), dtype=np.float64)),
+        dtype=np.float64,
+    )
+    if hit_events.ndim == 1:
+        hit_events = hit_events.reshape((-1, 4))
+
+    learner_indices = np.where(fighters[:, 0] == learner_team)[0]
+    rewards = np.zeros((len(learner_indices),), dtype=np.float32)
+
+    alive = fighters[learner_indices, 6] > 0.0
+    rewards[alive] += float(survival_reward_per_step)
+    survival_reward = float(np.sum(alive) * survival_reward_per_step)
+
+    fighter_to_agent = {
+        int(fighter_idx): agent_idx
+        for agent_idx, fighter_idx in enumerate(learner_indices)
+    }
+    blue_kills = 0
+    for hit_event in hit_events:
+        shooter_idx = int(hit_event[0])
+        shooter_team = int(hit_event[1])
+        target_team = int(hit_event[3])
+        agent_idx = fighter_to_agent.get(shooter_idx)
+        if agent_idx is None or shooter_team != learner_team or target_team != opponent_team:
+            continue
+        rewards[agent_idx] += float(kill_reward)
+        blue_kills += 1
+
+    kill_reward_total = float(blue_kills * kill_reward)
+    info = {
+        "survival_reward": survival_reward,
+        "kill_reward": kill_reward_total,
+        "blue_kills": float(blue_kills),
+        "hit_events": float(hit_events.shape[0]),
+    }
+    return rewards, info
+
+
 class StepResult:
     def __init__(
         self,
@@ -308,7 +357,6 @@ class ToyAcaiPPOEnv:
         self.step_count += 1
 
         fighters = np.asarray(next_obs["fighters"], dtype=np.float64)
-        blue = fighters[fighters[:, 0] == TEAM_LEARN]
         blue_alive = self._team_alive(fighters, TEAM_LEARN)
         red_alive = self._team_alive(fighters, TEAM_RULE)
         done = bool(
@@ -316,11 +364,12 @@ class ToyAcaiPPOEnv:
             or red_alive == 0
             or self.step_count >= self.max_steps
         )
-        agent_rewards = np.zeros((len(blue),), dtype=np.float32)
+        agent_rewards, auxiliary_info = auxiliary_agent_rewards(next_obs)
         info = {
             "blue_alive": float(blue_alive),
             "red_alive": float(red_alive),
             "outcome": 0.0,
+            **auxiliary_info,
         }
         if done:
             score = terminal_score(
@@ -330,7 +379,7 @@ class ToyAcaiPPOEnv:
                 max_steps=self.max_steps,
                 team_size=int(self.core.TEAM_FIGHTER_COUNT),
             )
-            agent_rewards[:] = score
+            agent_rewards += score
             info["terminal_score"] = score
             if red_alive == 0:
                 info["outcome"] = 1.0

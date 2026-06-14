@@ -26,13 +26,23 @@ namespace toy_acai
         double age;
         double lockLostTime;
         int teamId;
+        int shooterFighterIndex;
         int targetFighterIndex;
+    };
+
+    struct HitEvent
+    {
+        int shooterFighterIndex;
+        int shooterTeam;
+        int targetFighterIndex;
+        int targetTeam;
     };
 
     struct BattlefieldContext
     {
         std::array<FighterState, TeamCount * TeamFighterCount> fighters;
         std::vector<MissileState> missiles;
+        std::vector<HitEvent> hitEvents;
         Vec2 screenSize;
         RectF battlefieldArea;
     };

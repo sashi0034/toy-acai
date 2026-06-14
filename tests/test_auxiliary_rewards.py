@@ -13,6 +13,7 @@ from toy_acai_rl.env import (  # noqa: E402
     AUX_ALIVE_ADVANTAGE_REWARD_PER_STEP,
     AUX_DEATH_PENALTY,
     AUX_KILL_REWARD,
+    AUX_MOVEMENT_REWARD_PER_DISTANCE,
     AUX_SURVIVAL_REWARD_PER_STEP,
     AUX_TEAM_KILL_REWARD,
     AUX_TEAM_LOSS_PENALTY,
@@ -24,11 +25,18 @@ from toy_acai_rl.env import (  # noqa: E402
 )
 
 
-def make_obs(blue_health=(1.0, 1.0, 1.0, 1.0), red_health=(1.0, 1.0, 1.0, 1.0), hit_events=None):
+def make_obs(
+    blue_health=(1.0, 1.0, 1.0, 1.0),
+    red_health=(1.0, 1.0, 1.0, 1.0),
+    hit_events=None,
+    blue_positions=None,
+):
     fighters = np.zeros((8, 9), dtype=np.float64)
     fighters[:4, 0] = TEAM_LEARN
     fighters[:4, 1] = np.arange(4)
     fighters[:4, 6] = blue_health
+    if blue_positions is not None:
+        fighters[:4, 2:4] = np.asarray(blue_positions, dtype=np.float64)
     fighters[4:, 0] = TEAM_RULE
     fighters[4:, 1] = np.arange(4)
     fighters[4:, 6] = red_health
@@ -63,6 +71,47 @@ class AuxiliaryRewardsTest(unittest.TestCase):
         self.assertAlmostEqual(info["survival_reward"], 2 * AUX_SURVIVAL_REWARD_PER_STEP)
         self.assertAlmostEqual(info["advantage_reward"], 2 * (alive_reward - AUX_SURVIVAL_REWARD_PER_STEP))
         self.assertEqual(info["blue_kills"], 0.0)
+
+    def test_movement_distance_adds_tiny_reward_to_alive_agents(self):
+        previous_obs = make_obs(
+            blue_health=(1.0, 1.0, 0.0, 1.0),
+            blue_positions=[
+                [0.0, 0.0],
+                [100.0, 0.0],
+                [200.0, 0.0],
+                [300.0, 0.0],
+            ]
+        )
+        current_obs = make_obs(
+            blue_health=(1.0, 1.0, 0.0, 1.0),
+            blue_positions=[
+                [3.0, 4.0],
+                [100.0, 0.0],
+                [212.0, 0.0],
+                [300.0, 6.0],
+            ],
+        )
+
+        rewards, info = auxiliary_agent_rewards(current_obs, previous_obs=previous_obs)
+
+        reward_distance = np.hypot(1600.0, 900.0) * 0.25
+        expected = np.array(
+            [
+                base_step_reward(blue_alive=3, red_alive=4)
+                + (5.0 / reward_distance) * AUX_MOVEMENT_REWARD_PER_DISTANCE,
+                base_step_reward(blue_alive=3, red_alive=4),
+                0.0,
+                base_step_reward(blue_alive=3, red_alive=4)
+                + (6.0 / reward_distance) * AUX_MOVEMENT_REWARD_PER_DISTANCE,
+            ],
+            dtype=np.float32,
+        )
+        np.testing.assert_allclose(rewards, expected, atol=1e-8)
+        self.assertAlmostEqual(
+            info["movement_reward"],
+            ((5.0 + 6.0) / reward_distance) * AUX_MOVEMENT_REWARD_PER_DISTANCE,
+        )
+        self.assertAlmostEqual(info["mean_movement_distance"], (5.0 + 0.0 + 6.0) / 3.0)
 
     def test_blue_hit_event_rewards_shooter_and_surviving_team(self):
         rewards, info = auxiliary_agent_rewards(make_obs(hit_events=[[2, 0, 4, 1]]))

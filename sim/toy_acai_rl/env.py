@@ -20,7 +20,8 @@ AUX_TEAM_KILL_REWARD = 0.2
 AUX_DEATH_PENALTY = 1.0
 AUX_TEAM_LOSS_PENALTY = 0.2
 AUX_ALIVE_ADVANTAGE_REWARD_PER_STEP = 0.002
-AUX_SURVIVAL_REWARD_PER_STEP = 0.0002
+AUX_SURVIVAL_REWARD_PER_STEP = 0.0003
+AUX_MOVEMENT_REWARD_PER_DISTANCE = 0.03
 
 
 def add_default_module_paths(
@@ -336,6 +337,7 @@ def auxiliary_agent_rewards(
     team_loss_penalty: float = AUX_TEAM_LOSS_PENALTY,
     alive_advantage_reward_per_step: float = AUX_ALIVE_ADVANTAGE_REWARD_PER_STEP,
     survival_reward_per_step: float = AUX_SURVIVAL_REWARD_PER_STEP,
+    movement_reward_per_distance: float = AUX_MOVEMENT_REWARD_PER_DISTANCE,
 ) -> Tuple[np.ndarray, Dict[str, float]]:
     # 毎ステップ与える補助報酬。終端報酬だけだと「何が良かったか」が遠すぎるため、
     # 生存・撃墜・損失を小さな手がかりとして追加して学習を助ける。
@@ -363,6 +365,28 @@ def auxiliary_agent_rewards(
     rewards[alive] += per_alive_advantage_reward
     advantage_reward = float(np.sum(alive) * per_alive_advantage_reward)
 
+    movement_reward = 0.0
+    mean_movement_distance = 0.0
+    if previous_obs is not None:
+        previous_fighters = np.asarray(previous_obs["fighters"], dtype=np.float64)
+        field_w = float(obs["battlefield"][2])
+        field_h = float(obs["battlefield"][3])
+        reward_distance = max(math.hypot(field_w, field_h), 1e-6)
+        previous_alive = previous_fighters[learner_indices, 6] > 0.0
+        movement_eligible = alive & previous_alive
+        movement_distance = np.linalg.norm(
+            fighters[learner_indices, 2:4] - previous_fighters[learner_indices, 2:4],
+            axis=1,
+        )
+        clipped_movement = np.clip(movement_distance / reward_distance, 0.0, 1.0)
+        movement_rewards = clipped_movement * float(movement_reward_per_distance)
+        movement_rewards[~movement_eligible] = 0.0
+        # ノロノロ対策として、実際に移動した距離をごく小さく加点する。
+        rewards += movement_rewards.astype(np.float32)
+        movement_reward = float(np.sum(movement_rewards))
+        if np.any(movement_eligible):
+            mean_movement_distance = float(np.mean(movement_distance[movement_eligible]))
+
     fighter_to_agent = {
         int(fighter_idx): agent_idx
         for agent_idx, fighter_idx in enumerate(learner_indices)
@@ -386,7 +410,6 @@ def auxiliary_agent_rewards(
     team_kill_reward_total = float(np.sum(alive) * team_kill_reward * blue_kills)
     blue_losses = 0
     if previous_obs is not None:
-        previous_fighters = np.asarray(previous_obs["fighters"], dtype=np.float64)
         for fighter_idx in learner_indices:
             fighter_idx = int(fighter_idx)
             if previous_fighters[fighter_idx, 6] <= 0.0 or fighters[fighter_idx, 6] > 0.0:
@@ -404,6 +427,8 @@ def auxiliary_agent_rewards(
     info = {
         "survival_reward": survival_reward,
         "advantage_reward": advantage_reward,
+        "movement_reward": movement_reward,
+        "mean_movement_distance": mean_movement_distance,
         "kill_reward": kill_reward_total,
         "team_kill_reward": team_kill_reward_total,
         "death_penalty": death_penalty_total,

@@ -27,6 +27,8 @@ EPISODE_INFO_METRICS = (
     "reward_mean",
     "survival_reward",
     "advantage_reward",
+    "movement_reward",
+    "mean_movement_distance",
     "kill_reward",
     "team_kill_reward",
     "death_penalty",

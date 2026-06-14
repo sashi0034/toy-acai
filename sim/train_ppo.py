@@ -26,8 +26,13 @@ EPISODE_INFO_METRICS = (
     "fire_input_rate",
     "reward_mean",
     "survival_reward",
+    "advantage_reward",
     "kill_reward",
+    "team_kill_reward",
+    "death_penalty",
+    "team_loss_penalty",
     "blue_kills",
+    "blue_losses",
     "hit_events",
 )
 
@@ -45,13 +50,19 @@ def parse_args():
     parser.add_argument("--rollout-steps", type=int, default=512)
     parser.add_argument("--batch-size", type=int, default=128)
     parser.add_argument("--lr", type=float, default=3e-4)
-    parser.add_argument("--entropy-coef", type=float, default=0.001)
+    parser.add_argument("--entropy-coef", type=float, default=0.003)
     parser.add_argument("--update-epochs", type=int, default=4)
-    parser.add_argument("--gamma", type=float, default=1.0)
-    parser.add_argument("--gae-lambda", type=float, default=1.0)
+    parser.add_argument("--gamma", type=float, default=0.995)
+    parser.add_argument("--gae-lambda", type=float, default=0.95)
     parser.add_argument("--eval-fire-threshold", type=float, default=0.15)
     parser.add_argument("--fire-bias-init", type=float, default=0.4)
     parser.add_argument("--log-std-init", type=float, default=-0.8)
+    parser.add_argument("--hidden-dim", type=int, default=None)
+    parser.add_argument(
+        "--separate-policies",
+        action="store_true",
+        help="Train one independent policy per fighter instead of sharing a single policy.",
+    )
     parser.add_argument("--random-start-steps", type=int, default=120)
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--resume-checkpoint", type=Path, default=None)
@@ -103,6 +114,18 @@ def make_slack_thread_root_record(spool_root: Path, args) -> None:
     }
     tmp_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
     tmp_path.replace(final_path)
+
+
+def choose_hidden_dim(args) -> int:
+    if args.hidden_dim is not None:
+        return int(args.hidden_dim)
+    if args.resume_checkpoint is None:
+        return 256
+    checkpoint = torch.load(args.resume_checkpoint, map_location="cpu")
+    checkpoint_config = checkpoint.get("config", {})
+    if "hidden_dim" in checkpoint_config:
+        return int(checkpoint_config["hidden_dim"])
+    return 128
 
 
 def run_episode(env: ToyAcaiPPOEnv, trainer: PPOTrainer, buffer: Optional[RolloutBuffer], deterministic: bool = False):
@@ -200,6 +223,7 @@ def main():
     toy_acai_core = load_core(repo_root, args.module_dir)
     obs_dim = observation_dim(toy_acai_core)
     device = torch.device(args.device)
+    hidden_dim = choose_hidden_dim(args)
     config = PPOConfig(
         gamma=args.gamma,
         gae_lambda=args.gae_lambda,
@@ -211,9 +235,16 @@ def main():
         fire_bias_init=args.fire_bias_init,
         eval_fire_threshold=args.eval_fire_threshold,
         log_std_init=args.log_std_init,
+        hidden_dim=hidden_dim,
     )
     agent_count = int(toy_acai_core.TEAM_FIGHTER_COUNT)
-    trainer = PPOTrainer(obs_dim, config, device, agent_count=agent_count)
+    trainer = PPOTrainer(
+        obs_dim,
+        config,
+        device,
+        agent_count=agent_count,
+        shared_policy=not args.separate_policies,
+    )
     start_episode = 1
     if args.resume_checkpoint is not None:
         checkpoint = trainer.load(args.resume_checkpoint)

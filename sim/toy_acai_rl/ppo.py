@@ -69,19 +69,19 @@ class ActorCritic(nn.Module):
 
 @dataclass
 class PPOConfig:
-    gamma: float = 1.0
-    gae_lambda: float = 1.0
+    gamma: float = 0.995
+    gae_lambda: float = 0.95
     clip: float = 0.2
     lr: float = 3e-4
     update_epochs: int = 4
     batch_size: int = 256
     rollout_steps: int = 2048
     value_coef: float = 0.5
-    entropy_coef: float = 0.001
+    entropy_coef: float = 0.003
     max_grad_norm: float = 0.5
     fire_bias_init: float = 0.4
     eval_fire_threshold: float = 0.15
-    hidden_dim: int = 128
+    hidden_dim: int = 256
     log_std_init: float = -0.8
 
 
@@ -113,7 +113,13 @@ class AgentRolloutBuffer:
         self.dones.clear()
         self.values.clear()
 
-    def tensors(self, device: torch.device, last_value: float, config: PPOConfig) -> Dict[str, torch.Tensor]:
+    def tensors(
+        self,
+        device: torch.device,
+        last_value: float,
+        config: PPOConfig,
+        normalize_advantages: bool = True,
+    ) -> Dict[str, torch.Tensor]:
         obs = np.asarray(self.observations, dtype=np.float32)
         actions = np.asarray(self.actions, dtype=np.float32)
         old_log_probs = np.asarray(self.log_probs, dtype=np.float32)
@@ -139,8 +145,15 @@ class AgentRolloutBuffer:
             "advantages": torch.as_tensor(advantages, device=device),
             "returns": torch.as_tensor(returns, device=device),
         }
-        flat["advantages"] = (flat["advantages"] - flat["advantages"].mean()) / (flat["advantages"].std(unbiased=False) + 1e-8)
+        if normalize_advantages:
+            flat["advantages"] = normalize_advantages_tensor(flat["advantages"])
         return flat
+
+
+def normalize_advantages_tensor(advantages: torch.Tensor) -> torch.Tensor:
+    return (advantages - advantages.mean()) / (
+        advantages.std(unbiased=False) + 1e-8
+    )
 
 
 class RolloutBuffer:
@@ -219,7 +232,45 @@ class _SingleAgentPPOTrainer:
             return float(self.model.values(obs_tensor)[0].cpu())
 
     def update(self, buffer: AgentRolloutBuffer, last_value: float) -> Dict[str, float]:
-        data = buffer.tensors(self.device, last_value, self.config)
+        data = buffer.tensors(
+            self.device,
+            last_value,
+            self.config,
+            normalize_advantages=False,
+        )
+        data["advantages"] = normalize_advantages_tensor(data["advantages"])
+        return self._update_tensors(data)
+
+    def update_many(
+        self,
+        buffers: List[AgentRolloutBuffer],
+        last_values: np.ndarray,
+    ) -> Dict[str, float]:
+        last_values = np.asarray(last_values, dtype=np.float32)
+        if len(buffers) != len(last_values):
+            raise ValueError(
+                f"expected {len(buffers)} last values, got {len(last_values)}"
+            )
+        per_agent_data = [
+            buffer.tensors(
+                self.device,
+                float(last_value),
+                self.config,
+                normalize_advantages=False,
+            )
+            for buffer, last_value in zip(buffers, last_values)
+            if len(buffer) > 0
+        ]
+        if not per_agent_data:
+            return {}
+        data = {
+            key: torch.cat([agent_data[key] for agent_data in per_agent_data], dim=0)
+            for key in per_agent_data[0]
+        }
+        data["advantages"] = normalize_advantages_tensor(data["advantages"])
+        return self._update_tensors(data)
+
+    def _update_tensors(self, data: Dict[str, torch.Tensor]) -> Dict[str, float]:
         count = data["obs"].shape[0]
         indices = np.arange(count)
         stats = {
@@ -281,14 +332,21 @@ class PPOTrainer:
         config: PPOConfig,
         device: torch.device,
         agent_count: int = 4,
+        shared_policy: bool = True,
     ):
         self.config = config
         self.device = device
         self.agent_count = agent_count
-        self.agents = [
-            _SingleAgentPPOTrainer(obs_dim, config, device)
-            for _ in range(agent_count)
-        ]
+        self.shared_policy = shared_policy
+        if shared_policy:
+            self.shared_agent = _SingleAgentPPOTrainer(obs_dim, config, device)
+            self.agents = [self.shared_agent for _ in range(agent_count)]
+        else:
+            self.shared_agent = None
+            self.agents = [
+                _SingleAgentPPOTrainer(obs_dim, config, device)
+                for _ in range(agent_count)
+            ]
 
     def act(self, observations: np.ndarray, deterministic: bool = False):
         observations = np.asarray(observations, dtype=np.float32)
@@ -328,6 +386,10 @@ class PPOTrainer:
                 f"buffer agent_count={buffer.agent_count} does not match trainer agent_count={self.agent_count}"
             )
         last_values = np.asarray(last_values, dtype=np.float32)
+        if self.shared_policy:
+            stats = self.shared_agent.update_many(buffer.agent_buffers, last_values)
+            stats["shared_policy"] = 1.0
+            return stats
         per_agent_stats = [
             agent.update(buffer.agent_buffers[agent_id], float(last_values[agent_id]))
             for agent_id, agent in enumerate(self.agents)
@@ -344,6 +406,7 @@ class PPOTrainer:
             {
                 "models": [agent.model.state_dict() for agent in self.agents],
                 "agent_count": self.agent_count,
+                "shared_policy": self.shared_policy,
                 "config": self.config.__dict__,
                 **extra,
             },
@@ -366,8 +429,13 @@ class PPOTrainer:
             raise ValueError(
                 f"checkpoint has {len(checkpoint_models)} models, expected {self.agent_count}"
             )
-        for agent, state_dict in zip(self.agents, checkpoint_models):
-            agent.model.load_state_dict(state_dict)
+        if self.shared_policy:
+            self.shared_agent.model.load_state_dict(
+                self._average_state_dicts(checkpoint_models)
+            )
+        else:
+            for agent, state_dict in zip(self.agents, checkpoint_models):
+                agent.model.load_state_dict(state_dict)
         return checkpoint
 
     @staticmethod
@@ -379,3 +447,16 @@ class PPOTrainer:
             key: float(np.mean([stats[key] for stats in per_agent_stats if key in stats]))
             for key in keys
         }
+
+    @staticmethod
+    def _average_state_dicts(state_dicts: List[Dict[str, torch.Tensor]]) -> Dict[str, torch.Tensor]:
+        if not state_dicts:
+            raise ValueError("checkpoint does not contain any model state dicts")
+        averaged = {}
+        for key in state_dicts[0]:
+            values = [state_dict[key] for state_dict in state_dicts]
+            if torch.is_floating_point(values[0]):
+                averaged[key] = torch.stack(values, dim=0).mean(dim=0)
+            else:
+                averaged[key] = values[0]
+        return averaged

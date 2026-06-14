@@ -13,8 +13,12 @@ MISSILE_OBS_FEATURES = 14
 MAX_SPEED = 360.0
 OUT_OF_BOUNDS_DEATH_TIME = 3.0
 RENDER_INTERVAL = 0.1
-AUX_KILL_REWARD = 0.25
-AUX_SURVIVAL_REWARD_PER_STEP = 0.001
+AUX_KILL_REWARD = 1.0
+AUX_TEAM_KILL_REWARD = 0.2
+AUX_DEATH_PENALTY = 1.0
+AUX_TEAM_LOSS_PENALTY = 0.2
+AUX_ALIVE_ADVANTAGE_REWARD_PER_STEP = 0.002
+AUX_SURVIVAL_REWARD_PER_STEP = 0.0002
 
 
 def add_default_module_paths(
@@ -35,7 +39,7 @@ def load_core(repo_root: Path, module_dir: Optional[Path] = None):
 
 
 def _angle_delta(target: float, current: float) -> float:
-    return math.remainder(target - current, math.tau)
+    return (target - current + math.pi) % (2.0 * math.pi) - math.pi
 
 
 def _alive(fighters: np.ndarray) -> np.ndarray:
@@ -86,6 +90,67 @@ def _edge_turn(fighter: np.ndarray, field_w: float, field_h: float) -> float:
     return float(np.clip(_angle_delta(center_yaw, float(fighter[4])) / 0.7, -1.0, 1.0))
 
 
+def _ray_to_boundary_distance(
+    x: float,
+    y: float,
+    ray_dx: float,
+    ray_dy: float,
+    field_w: float,
+    field_h: float,
+    diag: float,
+) -> float:
+    candidates = []
+    eps = 1e-9
+    if abs(ray_dx) > eps:
+        candidates.extend([(0.0 - x) / ray_dx, (field_w - x) / ray_dx])
+    if abs(ray_dy) > eps:
+        candidates.extend([(0.0 - y) / ray_dy, (field_h - y) / ray_dy])
+
+    for t in sorted(candidate for candidate in candidates if candidate >= 0.0):
+        hit_x = x + ray_dx * t
+        hit_y = y + ray_dy * t
+        if -eps <= hit_x <= field_w + eps and -eps <= hit_y <= field_h + eps:
+            return float(np.clip(t / diag, 0.0, 1.0))
+    return 0.0
+
+
+def _boundary_ray_features(
+    x: float,
+    y: float,
+    forward: np.ndarray,
+    right: np.ndarray,
+    field_w: float,
+    field_h: float,
+    diag: float,
+) -> list:
+    directions = (
+        forward,
+        forward + right,
+        right,
+        -forward + right,
+        -forward,
+        -forward - right,
+        -right,
+        forward - right,
+    )
+    features = []
+    for direction in directions:
+        norm = max(float(np.linalg.norm(direction)), 1e-9)
+        ray = direction / norm
+        features.append(
+            _ray_to_boundary_distance(
+                x,
+                y,
+                float(ray[0]),
+                float(ray[1]),
+                field_w,
+                field_h,
+                diag,
+            )
+        )
+    return features
+
+
 def build_agent_observations(
     obs: Dict[str, np.ndarray], learner_team: int = TEAM_LEARN
 ) -> np.ndarray:
@@ -107,21 +172,23 @@ def build_agent_observations(
         forward = np.array([math.cos(yaw), math.sin(yaw)], dtype=np.float64)
         right = np.array([-math.sin(yaw), math.cos(yaw)], dtype=np.float64)
         velocity = forward * speed
+        boundary_rays = _boundary_ray_features(
+            x,
+            y,
+            forward,
+            right,
+            field_w,
+            field_h,
+            diag,
+        )
         features.extend(
-            [
-                x / field_w * 2.0 - 1.0,
-                y / field_h * 2.0 - 1.0,
-                float(forward[0]),
-                float(forward[1]),
+            boundary_rays
+            + [
                 speed / MAX_SPEED,
                 float(fighter[6]),
                 float(fighter[7]),
                 1.0 if float(fighter[7]) <= 0.0 else 0.0,
                 float(fighter[8]) / OUT_OF_BOUNDS_DEATH_TIME,
-                x / field_w,
-                (field_w - x) / field_w,
-                y / field_h,
-                (field_h - y) / field_h,
             ]
         )
 
@@ -142,10 +209,10 @@ def build_agent_observations(
             closing = 0.0
             if distance > 1e-6:
                 closing = -float(np.dot(rel, rel_velocity)) / (distance * MAX_SPEED)
+            seeker_half_angle = 0.85
+            in_fire_arc = 1.0 if abs(bearing_delta) <= seeker_half_angle else 0.0
             features.extend(
                 [
-                    float(rel[0]) / field_w,
-                    float(rel[1]) / field_h,
                     float(np.dot(rel, forward)) / diag,
                     float(np.dot(rel, right)) / diag,
                     distance / diag,
@@ -157,6 +224,8 @@ def build_agent_observations(
                     float(other[6]),
                     1.0 if int(other[0]) == learner_team else -1.0,
                     float(np.clip(closing, -2.0, 2.0)),
+                    in_fire_arc,
+                    1.0 if float(other[7]) <= 0.0 else 0.0,
                 ]
             )
 
@@ -171,13 +240,23 @@ def build_agent_observations(
             bearing = math.atan2(float(rel[1]), float(rel[0]))
             bearing_delta = _angle_delta(bearing, yaw)
             missile_yaw = float(missile[2])
+            missile_forward = np.array(
+                [math.cos(missile_yaw), math.sin(missile_yaw)], dtype=np.float64
+            )
+            missile_closing = 0.0
+            incoming_alignment = 0.0
+            if distance > 1e-6:
+                missile_velocity = missile_forward * float(missile[3])
+                missile_closing = -float(np.dot(rel, missile_velocity - velocity)) / (
+                    distance * MAX_SPEED
+                )
+                incoming_alignment = -float(np.dot(rel / distance, missile_forward))
             features.extend(
                 [
-                    float(rel[0]) / field_w,
-                    float(rel[1]) / field_h,
                     float(np.dot(rel, forward)) / diag,
                     float(np.dot(rel, right)) / diag,
                     distance / diag,
+                    float(np.clip(missile_closing, -2.0, 2.0)),
                     math.cos(bearing_delta),
                     math.sin(bearing_delta),
                     math.cos(_angle_delta(missile_yaw, yaw)),
@@ -187,6 +266,7 @@ def build_agent_observations(
                     float(missile[5]) / 1.1,
                     1.0 if int(missile[6]) == learner_team else -1.0,
                     1.0 if int(missile[7]) == int(agent_idx) else 0.0,
+                    float(np.clip(incoming_alignment, -1.0, 1.0)),
                 ]
             )
         for _ in range(
@@ -220,15 +300,20 @@ def terminal_score(
         time_bonus = 0.0
         if max_steps > 0:
             time_bonus = np.clip((max_steps - episode_steps) / max_steps, 0.0, 1.0)
-        return float(1.0 + 0.1 * blue_alive_ratio + 0.01 * time_bonus)
-    return float(-red_alive_ratio + 0.1 * blue_alive_ratio)
+        return float(2.0 + 0.5 * blue_alive_ratio + 0.05 * time_bonus)
+    return float(-2.0 * red_alive_ratio + 0.2 * blue_alive_ratio)
 
 
 def auxiliary_agent_rewards(
     obs: Dict[str, np.ndarray],
+    previous_obs: Optional[Dict[str, np.ndarray]] = None,
     learner_team: int = TEAM_LEARN,
     opponent_team: int = TEAM_RULE,
     kill_reward: float = AUX_KILL_REWARD,
+    team_kill_reward: float = AUX_TEAM_KILL_REWARD,
+    death_penalty: float = AUX_DEATH_PENALTY,
+    team_loss_penalty: float = AUX_TEAM_LOSS_PENALTY,
+    alive_advantage_reward_per_step: float = AUX_ALIVE_ADVANTAGE_REWARD_PER_STEP,
     survival_reward_per_step: float = AUX_SURVIVAL_REWARD_PER_STEP,
 ) -> Tuple[np.ndarray, Dict[str, float]]:
     fighters = np.asarray(obs["fighters"], dtype=np.float64)
@@ -245,6 +330,13 @@ def auxiliary_agent_rewards(
     alive = fighters[learner_indices, 6] > 0.0
     rewards[alive] += float(survival_reward_per_step)
     survival_reward = float(np.sum(alive) * survival_reward_per_step)
+    team_size = max(1, len(learner_indices))
+    blue_alive = int(np.sum((fighters[:, 0] == learner_team) & (fighters[:, 6] > 0.0)))
+    red_alive = int(np.sum((fighters[:, 0] == opponent_team) & (fighters[:, 6] > 0.0)))
+    alive_advantage = (blue_alive - red_alive) / float(team_size)
+    per_alive_advantage_reward = float(alive_advantage_reward_per_step) * alive_advantage
+    rewards[alive] += per_alive_advantage_reward
+    advantage_reward = float(np.sum(alive) * per_alive_advantage_reward)
 
     fighter_to_agent = {
         int(fighter_idx): agent_idx
@@ -260,12 +352,35 @@ def auxiliary_agent_rewards(
             continue
         rewards[agent_idx] += float(kill_reward)
         blue_kills += 1
+    if blue_kills:
+        rewards[alive] += float(team_kill_reward) * blue_kills
 
     kill_reward_total = float(blue_kills * kill_reward)
+    team_kill_reward_total = float(np.sum(alive) * team_kill_reward * blue_kills)
+    blue_losses = 0
+    if previous_obs is not None:
+        previous_fighters = np.asarray(previous_obs["fighters"], dtype=np.float64)
+        for fighter_idx in learner_indices:
+            fighter_idx = int(fighter_idx)
+            if previous_fighters[fighter_idx, 6] <= 0.0 or fighters[fighter_idx, 6] > 0.0:
+                continue
+            agent_idx = fighter_to_agent[fighter_idx]
+            rewards[agent_idx] -= float(death_penalty)
+            blue_losses += 1
+    if blue_losses:
+        rewards -= float(team_loss_penalty) * blue_losses
+
+    death_penalty_total = float(blue_losses * death_penalty)
+    team_loss_penalty_total = float(len(learner_indices) * team_loss_penalty * blue_losses)
     info = {
         "survival_reward": survival_reward,
+        "advantage_reward": advantage_reward,
         "kill_reward": kill_reward_total,
+        "team_kill_reward": team_kill_reward_total,
+        "death_penalty": death_penalty_total,
+        "team_loss_penalty": team_loss_penalty_total,
         "blue_kills": float(blue_kills),
+        "blue_losses": float(blue_losses),
         "hit_events": float(hit_events.shape[0]),
     }
     return rewards, info
@@ -364,7 +479,10 @@ class ToyAcaiPPOEnv:
             or red_alive == 0
             or self.step_count >= self.max_steps
         )
-        agent_rewards, auxiliary_info = auxiliary_agent_rewards(next_obs)
+        agent_rewards, auxiliary_info = auxiliary_agent_rewards(
+            next_obs,
+            previous_obs=self.last_obs,
+        )
         info = {
             "blue_alive": float(blue_alive),
             "red_alive": float(red_alive),

@@ -8,6 +8,8 @@ import numpy as np
 
 TEAM_LEARN = 0
 TEAM_RULE = 1
+# 観測に入れるミサイル数を固定する。ニューラルネットは入力長が固定である必要があるため、
+# 足りない分は 0 で埋める。
 MAX_TRACKED_MISSILES = 8
 MISSILE_OBS_FEATURES = 14
 MAX_SPEED = 360.0
@@ -24,6 +26,8 @@ AUX_SURVIVAL_REWARD_PER_STEP = 0.0002
 def add_default_module_paths(
     repo_root: Path, module_dir: Optional[Path] = None
 ) -> None:
+    # C++/Python バインディングである toy_acai_core を import できるように、
+    # ビルド済みモジュールの候補ディレクトリを sys.path に追加する。
     if module_dir is not None:
         sys.path.insert(0, str(module_dir.resolve()))
     for path in (repo_root / "linux-python" / "build", repo_root / "build"):
@@ -39,6 +43,7 @@ def load_core(repo_root: Path, module_dir: Optional[Path] = None):
 
 
 def _angle_delta(target: float, current: float) -> float:
+    # 角度差を [-pi, pi] に丸める。旋回方向を決めるときに扱いやすい形。
     return (target - current + math.pi) % (2.0 * math.pi) - math.pi
 
 
@@ -99,6 +104,8 @@ def _ray_to_boundary_distance(
     field_h: float,
     diag: float,
 ) -> float:
+    # 自機から指定方向へ線を伸ばし、戦場の端までの距離を 0..1 に正規化して返す。
+    # 端が近い方向を観測に入れることで、エリア外へ出る前に曲がる手がかりになる。
     candidates = []
     eps = 1e-9
     if abs(ray_dx) > eps:
@@ -123,6 +130,7 @@ def _boundary_ray_features(
     field_h: float,
     diag: float,
 ) -> list:
+    # 前・斜め・横・後ろの 8 方向について、境界までの距離を観測特徴量にする。
     directions = (
         forward,
         forward + right,
@@ -154,6 +162,8 @@ def _boundary_ray_features(
 def build_agent_observations(
     obs: Dict[str, np.ndarray], learner_team: int = TEAM_LEARN
 ) -> np.ndarray:
+    # シミュレータの生の状態(dict)を、ニューラルネットへ入れられる固定長ベクトルへ変換する。
+    # 座標は自機基準の forward/right 成分に分け、マップサイズで割ってスケールをそろえる。
     fighters = np.asarray(obs["fighters"], dtype=np.float64)
     missiles = np.asarray(obs["missiles"], dtype=np.float64)
     field_w = float(obs["battlefield"][2])
@@ -163,6 +173,7 @@ def build_agent_observations(
     agent_indices = np.where(fighters[:, 0] == learner_team)[0]
     all_obs = []
     for agent_idx in agent_indices:
+        # ここから 1 機ぶんの観測を作る。
         fighter = fighters[agent_idx]
         features = []
         x = float(fighter[2])
@@ -184,6 +195,7 @@ def build_agent_observations(
         features.extend(
             boundary_rays
             + [
+                # 自機の基本状態。速度や残り時間など、行動判断に必要な量を正規化して入れる。
                 speed / MAX_SPEED,
                 float(fighter[6]),
                 float(fighter[7]),
@@ -193,6 +205,7 @@ def build_agent_observations(
         )
 
         others = [i for i in range(len(fighters)) if i != agent_idx]
+        # 敵を先、味方を後に並べる。観測の並び順を固定すると、ネットワークが意味を覚えやすい。
         others.sort(key=lambda i: (fighters[i, 0] == learner_team, i))
         for other_idx in others:
             other = fighters[other_idx]
@@ -211,6 +224,8 @@ def build_agent_observations(
                 closing = -float(np.dot(rel, rel_velocity)) / (distance * MAX_SPEED)
             seeker_half_angle = 0.85
             in_fire_arc = 1.0 if abs(bearing_delta) <= seeker_half_angle else 0.0
+            # 他機との関係は「自機から見て前後どちらか・左右どちらか」を中心に表す。
+            # 絶対座標よりも、旋回や射撃の判断に直接つながりやすい。
             features.extend(
                 [
                     float(np.dot(rel, forward)) / diag,
@@ -235,6 +250,7 @@ def build_agent_observations(
             distance = math.hypot(float(rel[0]), float(rel[1]))
             missile_features.append((distance, missile, rel))
         missile_features.sort(key=lambda item: item[0])
+        # 近いミサイルほど回避に重要なので、距離順に最大 MAX_TRACKED_MISSILES 個だけ見る。
         for _, missile, rel in missile_features[:MAX_TRACKED_MISSILES]:
             distance = math.hypot(float(rel[0]), float(rel[1]))
             bearing = math.atan2(float(rel[1]), float(rel[0]))
@@ -251,6 +267,8 @@ def build_agent_observations(
                     distance * MAX_SPEED
                 )
                 incoming_alignment = -float(np.dot(rel / distance, missile_forward))
+            # missile_closing や incoming_alignment は「自分へ向かって来ているか」の手がかり。
+            # 単に近いだけでなく、危険度を学習しやすくするために入れている。
             features.extend(
                 [
                     float(np.dot(rel, forward)) / diag,
@@ -272,6 +290,7 @@ def build_agent_observations(
         for _ in range(
             MAX_TRACKED_MISSILES - len(missile_features[:MAX_TRACKED_MISSILES])
         ):
+            # 入力長を固定するため、見えているミサイルが少ない場合は 0 埋めする。
             features.extend([0.0] * MISSILE_OBS_FEATURES)
 
         all_obs.append(features)
@@ -293,6 +312,8 @@ def terminal_score(
     max_steps: int,
     team_size: int,
 ) -> float:
+    # エピソード終了時の大きな報酬。
+    # 勝敗を強く教え、勝った場合は味方生存数と早さを少しだけ加点する。
     team_size = max(1, int(team_size))
     blue_alive_ratio = float(blue_alive) / team_size
     red_alive_ratio = float(red_alive) / team_size
@@ -316,6 +337,8 @@ def auxiliary_agent_rewards(
     alive_advantage_reward_per_step: float = AUX_ALIVE_ADVANTAGE_REWARD_PER_STEP,
     survival_reward_per_step: float = AUX_SURVIVAL_REWARD_PER_STEP,
 ) -> Tuple[np.ndarray, Dict[str, float]]:
+    # 毎ステップ与える補助報酬。終端報酬だけだと「何が良かったか」が遠すぎるため、
+    # 生存・撃墜・損失を小さな手がかりとして追加して学習を助ける。
     fighters = np.asarray(obs["fighters"], dtype=np.float64)
     hit_events = np.asarray(
         obs.get("hit_events", np.zeros((0, 4), dtype=np.float64)),
@@ -328,6 +351,7 @@ def auxiliary_agent_rewards(
     rewards = np.zeros((len(learner_indices),), dtype=np.float32)
 
     alive = fighters[learner_indices, 6] > 0.0
+    # 生きているだけで小さく加点し、すぐに墜ちる行動を避けやすくする。
     rewards[alive] += float(survival_reward_per_step)
     survival_reward = float(np.sum(alive) * survival_reward_per_step)
     team_size = max(1, len(learner_indices))
@@ -335,6 +359,7 @@ def auxiliary_agent_rewards(
     red_alive = int(np.sum((fighters[:, 0] == opponent_team) & (fighters[:, 6] > 0.0)))
     alive_advantage = (blue_alive - red_alive) / float(team_size)
     per_alive_advantage_reward = float(alive_advantage_reward_per_step) * alive_advantage
+    # 味方が敵より多く残っている状態を少し評価する。チーム全体の形勢を伝える報酬。
     rewards[alive] += per_alive_advantage_reward
     advantage_reward = float(np.sum(alive) * per_alive_advantage_reward)
 
@@ -350,9 +375,11 @@ def auxiliary_agent_rewards(
         agent_idx = fighter_to_agent.get(shooter_idx)
         if agent_idx is None or shooter_team != learner_team or target_team != opponent_team:
             continue
+        # 撃墜した本人には大きめの報酬を与える。
         rewards[agent_idx] += float(kill_reward)
         blue_kills += 1
     if blue_kills:
+        # チームメイトの撃墜も全員に少し配る。協調を促すための報酬。
         rewards[alive] += float(team_kill_reward) * blue_kills
 
     kill_reward_total = float(blue_kills * kill_reward)
@@ -365,9 +392,11 @@ def auxiliary_agent_rewards(
             if previous_fighters[fighter_idx, 6] <= 0.0 or fighters[fighter_idx, 6] > 0.0:
                 continue
             agent_idx = fighter_to_agent[fighter_idx]
+            # 前ステップでは生存、今ステップでは非生存なら、その機が撃墜されたとみなす。
             rewards[agent_idx] -= float(death_penalty)
             blue_losses += 1
     if blue_losses:
+        # 味方の損失は全員にも小さく罰を与え、単独で突っ込む行動を抑える。
         rewards -= float(team_loss_penalty) * blue_losses
 
     death_penalty_total = float(blue_losses * death_penalty)
@@ -387,6 +416,8 @@ def auxiliary_agent_rewards(
 
 
 class StepResult:
+    """env.step の返り値を分かりやすくまとめる小さな入れ物。"""
+
     def __init__(
         self,
         observations: np.ndarray,
@@ -401,6 +432,8 @@ class StepResult:
 
 
 class ToyAcaiPPOEnv:
+    """toy_acai_core の環境を、PPO 学習で扱いやすい形に包むラッパー。"""
+
     def __init__(
         self,
         toy_acai_core,
@@ -426,6 +459,7 @@ class ToyAcaiPPOEnv:
         self.last_obs = None
 
     def _make_env(self):
+        # render=True のときだけ GIF 出力の設定を有効にする。
         if self.render and self.gif_path is not None:
             self.gif_path.parent.mkdir(parents=True, exist_ok=True)
             if self.module_dir is not None and (self.module_dir / "resources").exists():
@@ -442,12 +476,15 @@ class ToyAcaiPPOEnv:
         return self.core.BattlefieldEnv(**env_kwargs)
 
     def reset(self) -> np.ndarray:
+        # シミュレータを初期化し、生の状態ではなく学習用の観測ベクトルを返す。
         self.step_count = 0
         self.last_obs = self.env.reset()
         self._apply_random_start()
         return build_agent_observations(self.last_obs)
 
     def _apply_random_start(self) -> None:
+        # 毎回まったく同じ初期配置から始めると過学習しやすい。
+        # 数ステップだけランダムに動かして、開始状況にばらつきを作る。
         for _ in range(max(0, self.random_start_steps)):
             actions = np.zeros((self.core.FIGHTER_COUNT, 3), dtype=np.float64)
             actions[:, 0] = self.rng.uniform(0.15, 0.9, size=self.core.FIGHTER_COUNT)
@@ -458,6 +495,8 @@ class ToyAcaiPPOEnv:
         if self.last_obs is None:
             raise RuntimeError("reset() must be called before step()")
 
+        # まず赤チームのルールベース行動を全機ぶん作り、
+        # そこへ学習対象である青チームの行動を上書きする。
         actions = self.opponent.actions(self.last_obs, self.core.FIGHTER_COUNT)
         learner_indices = np.where(
             np.asarray(self.last_obs["fighters"])[:, 0] == TEAM_LEARN
@@ -471,6 +510,7 @@ class ToyAcaiPPOEnv:
         next_obs = self.env.step(actions)
         self.step_count += 1
 
+        # 終了条件は「どちらかが全滅」または「最大ステップ到達」。
         fighters = np.asarray(next_obs["fighters"], dtype=np.float64)
         blue_alive = self._team_alive(fighters, TEAM_LEARN)
         red_alive = self._team_alive(fighters, TEAM_RULE)
@@ -490,6 +530,7 @@ class ToyAcaiPPOEnv:
             **auxiliary_info,
         }
         if done:
+            # 終了時だけ勝敗に応じた大きな報酬を足す。
             score = terminal_score(
                 blue_alive=blue_alive,
                 red_alive=red_alive,

@@ -9,6 +9,8 @@ from torch.distributions import Bernoulli, Normal
 
 
 class ActorCritic(nn.Module):
+    """方策(actor)と価値関数(critic)を 1 つのネットワークで共有するモデル。"""
+
     def __init__(
         self,
         obs_dim: int,
@@ -17,6 +19,8 @@ class ActorCritic(nn.Module):
         log_std_init: float = -0.8,
     ):
         super().__init__()
+        # backbone は観測ベクトルを特徴量に変換する共通部分。
+        # その上に「行動を出す頭」と「状態価値を出す頭」を載せる。
         self.backbone = nn.Sequential(
             nn.Linear(obs_dim, hidden_dim),
             nn.Tanh(),
@@ -26,12 +30,18 @@ class ActorCritic(nn.Module):
         self.mean = nn.Linear(hidden_dim, 2)
         self.fire_logits = nn.Linear(hidden_dim, 1)
         self.value = nn.Linear(hidden_dim, 1)
+        # 連続行動(加速・旋回)は正規分布からサンプルする。
+        # 平均は観測ごとに出し、標準偏差は学習可能なパラメータとして持つ。
         self.log_std = nn.Parameter(torch.full((2,), log_std_init))
+        # fire は 0/1 の離散行動なので Bernoulli 分布の logit として扱う。
+        # 初期値を少し正にして、学習初期からまったく撃たない状態を避ける。
         nn.init.constant_(self.fire_logits.bias, fire_bias_init)
 
     def forward(self, obs: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         hidden = self.backbone(obs)
         mean = self.mean(hidden)
+        # 標準偏差が大きすぎると行動が荒れ、小さすぎると探索しなくなる。
+        # clamp で探索量の範囲を制限している。
         log_std = torch.clamp(self.log_std, -2.5, 0.0).expand_as(mean)
         return mean, log_std, self.fire_logits(hidden), self.value(hidden).squeeze(-1)
 
@@ -43,17 +53,23 @@ class ActorCritic(nn.Module):
     ):
         mean, log_std, fire_logits, value = self.forward(obs)
         if deterministic:
+            # 評価時は分布からランダムに引かず、平均行動を使って実力を測る。
             raw_cont = mean
             fire = (torch.sigmoid(fire_logits) >= fire_threshold).float()
         else:
+            # 学習時は確率的に行動する。いろいろ試すことで、後から良い行動を強められる。
             raw_cont = Normal(mean, log_std.exp()).sample()
             fire = Bernoulli(logits=fire_logits).sample()
         action = torch.cat([raw_cont, fire], dim=-1)
+        # PPO の確率計算には tanh 前の raw_cont を使い、
+        # 環境には [-1, 1] に収めた env_action を渡す。
         env_action = torch.cat([torch.tanh(raw_cont), fire], dim=-1)
         log_prob, entropy = self.evaluate_actions(obs, action)
         return action, env_action, log_prob, entropy, value
 
     def evaluate_actions(self, obs: torch.Tensor, actions: torch.Tensor):
+        # 保存しておいた行動が、現在の方策ではどれくらいの確率で出るかを再計算する。
+        # PPO の更新では「古い方策の確率」と「現在の方策の確率」の比を使う。
         mean, log_std, fire_logits, _ = self.forward(obs)
         cont_dist = Normal(mean, log_std.exp())
         fire_dist = Bernoulli(logits=fire_logits)
@@ -69,8 +85,11 @@ class ActorCritic(nn.Module):
 
 @dataclass
 class PPOConfig:
+    # gamma: 将来報酬をどれだけ重視するか。1 に近いほど長期的な結果を重視する。
     gamma: float = 0.995
+    # gae_lambda: advantage 推定の滑らかさ。大きいほど長い未来を見るが分散も増える。
     gae_lambda: float = 0.95
+    # clip: 方策を一度に変えすぎないための PPO 特有の制限幅。
     clip: float = 0.2
     lr: float = 3e-4
     update_epochs: int = 4
@@ -86,6 +105,8 @@ class PPOConfig:
 
 
 class AgentRolloutBuffer:
+    """1 機ぶんの経験を時系列でためて、PPO 更新用テンソルに変換する。"""
+
     def __init__(self):
         self.observations = []
         self.actions = []
@@ -120,6 +141,7 @@ class AgentRolloutBuffer:
         config: PPOConfig,
         normalize_advantages: bool = True,
     ) -> Dict[str, torch.Tensor]:
+        # Python list のままだとミニバッチ学習しづらいので、NumPy/Torch の配列にまとめる。
         obs = np.asarray(self.observations, dtype=np.float32)
         actions = np.asarray(self.actions, dtype=np.float32)
         old_log_probs = np.asarray(self.log_probs, dtype=np.float32)
@@ -130,6 +152,8 @@ class AgentRolloutBuffer:
         advantages = np.zeros_like(rewards, dtype=np.float32)
         last_gae = 0.0
         next_value = float(last_value)
+        # GAE(Generalized Advantage Estimation)を後ろから計算する。
+        # advantage は「価値関数の予想より、実際の行動がどれだけ良かったか」の目安。
         for step in reversed(range(rewards.shape[0])):
             next_nonterminal = 1.0 - dones[step]
             delta = rewards[step] + config.gamma * next_value * next_nonterminal - values[step]
@@ -151,17 +175,21 @@ class AgentRolloutBuffer:
 
 
 def normalize_advantages_tensor(advantages: torch.Tensor) -> torch.Tensor:
+    # advantage のスケールをそろえると、方策更新の大きさが安定しやすい。
     return (advantages - advantages.mean()) / (
         advantages.std(unbiased=False) + 1e-8
     )
 
 
 class RolloutBuffer:
+    """複数エージェントの経験を、エージェントごとのバッファに分けて保持する。"""
+
     def __init__(self, agent_count: int = 4):
         self.agent_count = agent_count
         self.agent_buffers = [AgentRolloutBuffer() for _ in range(agent_count)]
 
     def add(self, obs, action, log_prob, reward, done, value):
+        # 環境は味方全機ぶんの結果をまとめて返すので、ここで 1 機ずつに分解する。
         observations = np.asarray(obs, dtype=np.float32)
         actions = np.asarray(action, dtype=np.float32)
         log_probs = np.asarray(log_prob, dtype=np.float32)
@@ -192,6 +220,8 @@ class RolloutBuffer:
 
 
 class _SingleAgentPPOTrainer:
+    """1 つの ActorCritic モデルを学習させるための実装。"""
+
     def __init__(self, obs_dim: int, config: PPOConfig, device: torch.device):
         self.config = config
         self.device = device
@@ -204,6 +234,7 @@ class _SingleAgentPPOTrainer:
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=config.lr)
 
     def act(self, observation: np.ndarray, deterministic: bool = False):
+        # モデルは batch 次元つきのテンソルを受け取るため、1 機ぶんの観測にも [None, :] を付ける。
         obs_tensor = torch.as_tensor(
             np.asarray(observation, dtype=np.float32)[None, :],
             dtype=torch.float32,
@@ -246,6 +277,8 @@ class _SingleAgentPPOTrainer:
         buffers: List[AgentRolloutBuffer],
         last_values: np.ndarray,
     ) -> Dict[str, float]:
+        # 共有方策の場合、全機の経験をまとめて「同じ 1 つの方策」を更新する。
+        # これによりデータ量が増え、各機が同じ操作ルールを学ぶ。
         last_values = np.asarray(last_values, dtype=np.float32)
         if len(buffers) != len(last_values):
             raise ValueError(
@@ -285,6 +318,7 @@ class _SingleAgentPPOTrainer:
         for _ in range(self.config.update_epochs):
             np.random.shuffle(indices)
             for start in range(0, count, self.config.batch_size):
+                # ためた経験を小さなミニバッチに分け、同じ rollout を数 epoch 再利用する。
                 batch_idx = torch.as_tensor(indices[start : start + self.config.batch_size], device=self.device)
                 obs = data["obs"][batch_idx]
                 actions = data["actions"][batch_idx]
@@ -296,11 +330,16 @@ class _SingleAgentPPOTrainer:
                 values = self.model.values(obs)
                 log_ratio = log_probs - old_log_probs
                 ratio = torch.exp(log_ratio)
+                # ratio > 1 なら「その行動を以前より出しやすくした」、
+                # ratio < 1 なら「以前より出しにくくした」という意味になる。
                 unclipped = ratio * advantages
                 clipped = torch.clamp(ratio, 1.0 - self.config.clip, 1.0 + self.config.clip) * advantages
+                # clip された目的関数を使うことで、良さそうな行動でも一気に確率を上げすぎない。
                 policy_loss = -torch.min(unclipped, clipped).mean()
+                # critic は、実際に得られた return に value を近づけるように学習する。
                 value_loss = 0.5 * (returns - values).pow(2).mean()
                 entropy_mean = entropy.mean()
+                # entropy は探索の多さ。loss から引くことで、早すぎる決め打ちを少し抑える。
                 approx_kl = ((ratio - 1.0) - log_ratio).mean()
                 clip_fraction = (
                     (torch.abs(ratio - 1.0) > self.config.clip).float().mean()
@@ -309,6 +348,7 @@ class _SingleAgentPPOTrainer:
 
                 self.optimizer.zero_grad()
                 loss.backward()
+                # 勾配が大きすぎると学習が壊れやすいので、最大ノルムで丸める。
                 nn.utils.clip_grad_norm_(self.model.parameters(), self.config.max_grad_norm)
                 self.optimizer.step()
 
@@ -326,6 +366,8 @@ class _SingleAgentPPOTrainer:
         return stats
 
 class PPOTrainer:
+    """複数の味方機をまとめて扱うラッパー。共有方策と個別方策の両方に対応する。"""
+
     def __init__(
         self,
         obs_dim: int,
@@ -339,9 +381,11 @@ class PPOTrainer:
         self.agent_count = agent_count
         self.shared_policy = shared_policy
         if shared_policy:
+            # 共有方策: 全機が同じモデルを使う。サンプル効率が良く、まずはこちらが分かりやすい。
             self.shared_agent = _SingleAgentPPOTrainer(obs_dim, config, device)
             self.agents = [self.shared_agent for _ in range(agent_count)]
         else:
+            # 個別方策: 各機が別々のモデルを持つ。役割分担を学べる可能性があるが難しくなる。
             self.shared_agent = None
             self.agents = [
                 _SingleAgentPPOTrainer(obs_dim, config, device)
@@ -349,6 +393,7 @@ class PPOTrainer:
             ]
 
     def act(self, observations: np.ndarray, deterministic: bool = False):
+        # observations は [agent_count, obs_dim]。各行を各機の trainer に渡す。
         observations = np.asarray(observations, dtype=np.float32)
         if observations.shape[0] != self.agent_count:
             raise ValueError(
@@ -381,6 +426,8 @@ class PPOTrainer:
         )
 
     def update(self, buffer: RolloutBuffer, last_values: np.ndarray) -> Dict[str, float]:
+        # last_values は rollout の最後の観測に対する価値推定。
+        # エピソード途中で切れた経験の return 計算に使う。
         if buffer.agent_count != self.agent_count:
             raise ValueError(
                 f"buffer agent_count={buffer.agent_count} does not match trainer agent_count={self.agent_count}"
@@ -401,6 +448,7 @@ class PPOTrainer:
         return stats
 
     def save(self, path: Path, extra: Dict[str, object]) -> None:
+        # 再開に必要な重み・設定・補足情報をまとめて保存する。
         path.parent.mkdir(parents=True, exist_ok=True)
         torch.save(
             {
@@ -414,6 +462,8 @@ class PPOTrainer:
         )
 
     def load(self, path: Path) -> Dict[str, object]:
+        # checkpoint の agent 数や形式を確認してから読み込む。
+        # 共有方策へ読み込む場合は、保存されている各機の重みを平均して 1 つにする。
         checkpoint = torch.load(path, map_location=self.device)
         if "models" not in checkpoint:
             raise ValueError(

@@ -71,6 +71,7 @@ Slack 投稿が多すぎる場合は、まず `TOY_ACAI_RENDER_EVERY` を大き�
 
 学習中に作られた GIF は `outputs/rl/default/slack/pending/*.json` として Slack 送信用にスプールされます。
 学習開始時に uploader が `docs/rl_model_overview.md` を添付した Slack 親メッセージを投稿し、以降の GIF 投稿はそのメッセージのスレッドにまとまります。
+GIF 投稿 10 件ごとに、横軸 episode、縦軸 reward の推移 PNG も同じスレッドへ投稿されます。
 Slack の設定はリポジトリ直下の `.env` に置けます。まず `.env.example` をコピーして、ログインノードで実際の値を入れてください:
 
 ```bash

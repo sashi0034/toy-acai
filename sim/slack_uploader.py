@@ -235,17 +235,17 @@ def upload_record(record_path: Path, token: str, channel_id: str, thread: SlackT
         )
         return
 
-    gif_path = Path(record["gif_path"])
-    if not gif_path.exists():
-        raise FileNotFoundError(f"GIF does not exist: {gif_path}")
+    file_path = Path(record.get("file_path") or record["gif_path"])
+    if not file_path.exists():
+        raise FileNotFoundError(f"Slack attachment does not exist: {file_path}")
 
     thread_ts = thread.ensure()
     if dry_run:
-        print(f"dry-run: would upload {gif_path} to {channel_id} thread {thread_ts}: {record.get('comment', '')}")
+        print(f"dry-run: would upload {file_path} to {channel_id} thread {thread_ts}: {record.get('comment', '')}")
         return
 
-    upload_file(token, channel_id, gif_path, initial_comment=record.get("comment", ""), thread_ts=thread_ts)
-    print(f"uploaded {gif_path} to {channel_id} thread {thread_ts}")
+    upload_file(token, channel_id, file_path, initial_comment=record.get("comment", ""), thread_ts=thread_ts)
+    print(f"uploaded {file_path} to {channel_id} thread {thread_ts}")
 
 
 def move_record(record_path: Path, destination_dir: Path) -> None:

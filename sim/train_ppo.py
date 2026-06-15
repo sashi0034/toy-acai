@@ -17,6 +17,8 @@ from toy_acai_rl.env import (
 from toy_acai_rl.ppo import PPOConfig, PPOTrainer, RolloutBuffer
 
 
+SLACK_REWARD_CHART_POST_INTERVAL = 10
+
 EPISODE_INFO_METRICS = (
     "episode_steps",
     "terminal_score",
@@ -90,6 +92,147 @@ def make_spool_record(spool_root: Path, gif_path: Path, metrics: dict) -> None:
             f"toy-acai PPO episode {int(metrics['episode'])}: "
             f"reward={metrics['reward']:.3f}, outcome={metrics['outcome']:+.0f}, "
             f"terminal_score={metrics.get('terminal_score', 0.0):.3f}"
+        ),
+    }
+    tmp_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+    tmp_path.replace(final_path)
+
+
+def reward_history_from_jsonl(path: Path, max_episode: int) -> list[dict]:
+    if max_episode <= 0 or not path.exists():
+        return []
+    history = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        try:
+            row = json.loads(line)
+            episode = int(row["episode"])
+            if episode <= max_episode:
+                history.append({"episode": episode, "reward": float(row["reward"])})
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+            continue
+    return history
+
+
+def _format_chart_tick(value: float) -> str:
+    if abs(value) >= 100.0:
+        return f"{value:.0f}"
+    if abs(value) >= 10.0:
+        return f"{value:.1f}"
+    return f"{value:.2f}"
+
+
+def make_reward_chart_image(path: Path, reward_history: list[dict]) -> None:
+    from PIL import Image, ImageDraw, ImageFont
+
+    if not reward_history:
+        raise ValueError("reward_history must contain at least one point")
+
+    points = sorted(
+        (int(row["episode"]), float(row["reward"]))
+        for row in reward_history
+    )
+    episodes = [episode for episode, _reward in points]
+    rewards = [reward for _episode, reward in points]
+
+    width = 900
+    height = 520
+    margin_left = 86
+    margin_right = 34
+    margin_top = 52
+    margin_bottom = 76
+    plot_left = margin_left
+    plot_top = margin_top
+    plot_right = width - margin_right
+    plot_bottom = height - margin_bottom
+    plot_width = plot_right - plot_left
+    plot_height = plot_bottom - plot_top
+
+    x_min = min(episodes)
+    x_max = max(episodes)
+    if x_min == x_max:
+        x_min -= 1
+        x_max += 1
+
+    y_min = min(rewards)
+    y_max = max(rewards)
+    if y_min == y_max:
+        padding = max(1.0, abs(y_min) * 0.1)
+    else:
+        padding = (y_max - y_min) * 0.12
+    y_min -= padding
+    y_max += padding
+
+    def map_x(episode: int) -> float:
+        return plot_left + (episode - x_min) / (x_max - x_min) * plot_width
+
+    def map_y(reward: float) -> float:
+        return plot_bottom - (reward - y_min) / (y_max - y_min) * plot_height
+
+    image = Image.new("RGB", (width, height), (250, 251, 253))
+    draw = ImageDraw.Draw(image)
+    font = ImageFont.load_default()
+    title_font = ImageFont.load_default()
+
+    draw.rectangle((plot_left, plot_top, plot_right, plot_bottom), fill=(255, 255, 255), outline=(202, 208, 219))
+
+    y_tick_count = 5
+    for index in range(y_tick_count + 1):
+        ratio = index / y_tick_count
+        value = y_min + (y_max - y_min) * ratio
+        y = plot_bottom - ratio * plot_height
+        draw.line((plot_left, y, plot_right, y), fill=(226, 231, 238))
+        label = _format_chart_tick(value)
+        bbox = draw.textbbox((0, 0), label, font=font)
+        draw.text((plot_left - 10 - (bbox[2] - bbox[0]), y - 6), label, fill=(66, 78, 96), font=font)
+
+    x_tick_count = min(6, max(1, len(points) - 1))
+    for index in range(x_tick_count + 1):
+        ratio = index / x_tick_count if x_tick_count else 0.0
+        value = int(round(x_min + (x_max - x_min) * ratio))
+        x = map_x(value)
+        draw.line((x, plot_bottom, x, plot_bottom + 6), fill=(110, 122, 142))
+        label = str(value)
+        bbox = draw.textbbox((0, 0), label, font=font)
+        draw.text((x - (bbox[2] - bbox[0]) / 2, plot_bottom + 12), label, fill=(66, 78, 96), font=font)
+
+    mapped_points = [(map_x(episode), map_y(reward)) for episode, reward in points]
+    if len(mapped_points) >= 2:
+        draw.line(mapped_points, fill=(30, 103, 210), width=3)
+    for x, y in mapped_points:
+        draw.ellipse((x - 4, y - 4, x + 4, y + 4), fill=(239, 125, 47), outline=(255, 255, 255), width=2)
+
+    latest_episode, latest_reward = points[-1]
+    title = f"toy-acai PPO reward trend ({len(points)} evals)"
+    subtitle = f"latest: episode {latest_episode}, reward={latest_reward:.3f}"
+    draw.text((plot_left, 18), title, fill=(28, 38, 54), font=title_font)
+    draw.text((plot_left + 330, 20), subtitle, fill=(66, 78, 96), font=font)
+
+    x_label = "episode"
+    x_bbox = draw.textbbox((0, 0), x_label, font=font)
+    draw.text(((plot_left + plot_right - (x_bbox[2] - x_bbox[0])) / 2, height - 30), x_label, fill=(28, 38, 54), font=font)
+    y_label = "reward"
+    draw.text((18, plot_top + plot_height / 2 - 6), y_label, fill=(28, 38, 54), font=font)
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    image.save(path)
+
+
+def make_reward_chart_spool_record(spool_root: Path, chart_path: Path, reward_history: list[dict]) -> None:
+    pending = spool_root / "pending"
+    pending.mkdir(parents=True, exist_ok=True)
+    latest = reward_history[-1]
+    record_id = f"reward_chart_{int(latest['episode']):06d}_{int(time.time())}"
+    tmp_path = pending / f".{record_id}.tmp"
+    final_path = pending / f"{record_id}.json"
+    payload = {
+        "file_path": str(chart_path.resolve()),
+        "episode": int(latest["episode"]),
+        "reward": float(latest["reward"]),
+        "comment": (
+            f"toy-acai PPO reward trend after {SLACK_REWARD_CHART_POST_INTERVAL} Slack updates: "
+            f"latest episode {int(latest['episode'])}, reward={float(latest['reward']):.3f}"
         ),
     }
     tmp_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
@@ -237,6 +380,7 @@ def main():
     args = parse_args()
     repo_root = Path(__file__).resolve().parents[1]
     args.out_dir = args.out_dir.resolve()
+    args.out_dir.mkdir(parents=True, exist_ok=True)
     if args.module_dir is not None:
         args.module_dir = args.module_dir.resolve()
     if args.resume_checkpoint is not None:
@@ -277,6 +421,7 @@ def main():
         agent_count=agent_count,
     )
     start_episode = 1
+    resumed_episode = 0
     if args.resume_checkpoint is not None:
         # 途中再開時は重みだけでなく、観測次元が現在の環境と一致するかも確認する。
         # 観測設計を変えたチェックポイントをそのまま使うと、入力サイズが合わない。
@@ -286,10 +431,12 @@ def main():
             raise ValueError(
                 f"checkpoint obs_dim={checkpoint_obs_dim} does not match env obs_dim={obs_dim}"
             )
-        start_episode = int(checkpoint.get("episode", 0)) + 1
+        resumed_episode = int(checkpoint.get("episode", 0))
+        start_episode = resumed_episode + 1
     buffer = RolloutBuffer(agent_count=agent_count)
+    eval_reward_history = reward_history_from_jsonl(args.out_dir / "eval_metrics.jsonl", resumed_episode)
+    slack_update_post_count = len(eval_reward_history)
 
-    args.out_dir.mkdir(parents=True, exist_ok=True)
     # 学習用環境は 1 つを使い回す。各エピソードの先頭で reset される。
     train_env = ToyAcaiPPOEnv(
         toy_acai_core,
@@ -335,6 +482,17 @@ def main():
         if args.render_every > 0 and episode % args.render_every == 0:
             # GIF 生成つきの評価は重いので、毎エピソードではなく間隔を空けて実行する。
             eval_metrics = evaluate(toy_acai_core, trainer, args, episode, repo_root)
+            eval_reward_history.append(
+                {"episode": int(eval_metrics["episode"]), "reward": float(eval_metrics["reward"])}
+            )
+            slack_update_post_count += 1
+            if (
+                args.slack_spool is not None
+                and slack_update_post_count % SLACK_REWARD_CHART_POST_INTERVAL == 0
+            ):
+                chart_path = args.out_dir / "media" / f"reward_chart_{episode:06d}.png"
+                make_reward_chart_image(chart_path, eval_reward_history)
+                make_reward_chart_spool_record(args.slack_spool, chart_path, eval_reward_history)
             print(json.dumps({"eval": eval_metrics}, sort_keys=True), flush=True)
 
     if len(buffer) > 0:

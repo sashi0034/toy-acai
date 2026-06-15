@@ -162,6 +162,40 @@ class SlackUploaderTest(unittest.TestCase):
                 [("xoxb-token", "C123", gif_path, "episode", "1710000000.000100")],
             )
 
+    def test_file_path_upload_uses_existing_thread_ts(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            spool = root / "spool"
+            spool.mkdir()
+            (spool / "thread_ts").write_text("1710000000.000100\n", encoding="utf-8")
+            chart_path = root / "reward_chart.png"
+            chart_path.write_bytes(b"png")
+            record_path = root / "reward_chart.json"
+            record_path.write_text(
+                json.dumps({"file_path": str(chart_path), "comment": "reward trend"}),
+                encoding="utf-8",
+            )
+            uploads = []
+
+            original_upload_file = slack_uploader.upload_file
+            slack_uploader.upload_file = (
+                lambda token, channel_id, file_path, initial_comment="", thread_ts=None: uploads.append(
+                    (token, channel_id, file_path, initial_comment, thread_ts)
+                )
+                or "FPNG"
+            )
+            try:
+                thread = slack_uploader.SlackThread(spool, "xoxb-token", "C123", dry_run=False)
+                with contextlib.redirect_stdout(io.StringIO()):
+                    slack_uploader.upload_record(record_path, "xoxb-token", "C123", thread, dry_run=False)
+            finally:
+                slack_uploader.upload_file = original_upload_file
+
+            self.assertEqual(
+                uploads,
+                [("xoxb-token", "C123", chart_path, "reward trend", "1710000000.000100")],
+            )
+
     def test_file_share_ts_retries_until_slack_share_is_visible(self):
         responses = [
             {"file": {"shares": {}}},

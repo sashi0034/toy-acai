@@ -15,7 +15,7 @@ class ActorCritic(nn.Module):
         self,
         obs_dim: int,
         hidden_dim: int = 128,
-        fire_bias_init: float = 0.4,
+        fire_bias_init: float = 1.0,
         log_std_init: float = -0.8,
     ):
         super().__init__()
@@ -98,7 +98,7 @@ class PPOConfig:
     value_coef: float = 0.5
     entropy_coef: float = 0.003
     max_grad_norm: float = 0.5
-    fire_bias_init: float = 0.4
+    fire_bias_init: float = 1.0
     eval_fire_threshold: float = 0.15
     hidden_dim: int = 256
     log_std_init: float = -0.8

@@ -57,7 +57,7 @@ def parse_args():
     parser.add_argument("--gamma", type=float, default=0.995)
     parser.add_argument("--gae-lambda", type=float, default=0.95)
     parser.add_argument("--eval-fire-threshold", type=float, default=0.15)
-    parser.add_argument("--fire-bias-init", type=float, default=0.4)
+    parser.add_argument("--fire-bias-init", type=float, default=1.0)
     parser.add_argument("--log-std-init", type=float, default=-0.8)
     parser.add_argument("--hidden-dim", type=int, default=None)
     parser.add_argument("--random-start-steps", type=int, default=120)

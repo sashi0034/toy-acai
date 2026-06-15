@@ -211,7 +211,7 @@ checkpoint 再開時は、保存済み checkpoint の `hidden_dim` を優先し�
 `log_std` は `[-2.5, 0.0]` に clamp されます。
 
 `fire` は Bernoulli 分布です。
-初期状態でまったく撃たない方策になりにくいよう、`fire_logits.bias` はデフォルト `0.4` に初期化されます。
+初期状態でまったく撃たない方策になりにくいよう、`fire_logits.bias` はデフォルト `1.0` に初期化されます。
 
 ## 個別方策
 

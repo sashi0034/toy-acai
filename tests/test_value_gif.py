@@ -27,10 +27,10 @@ class ValueGifTest(unittest.TestCase):
         self.assertEqual(
             value_overlay_lines([1.0, -2.5, 0.0, 3.25]),
             [
-                "B0 value=+1.000",
-                "B1 value=-2.500",
-                "B2 value=+0.000",
-                "B3 value=+3.250",
+                "B0 critic=+1.000",
+                "B1 critic=-2.500",
+                "B2 critic=+0.000",
+                "B3 critic=+3.250",
             ],
         )
 

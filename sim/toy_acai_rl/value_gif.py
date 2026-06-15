@@ -6,7 +6,7 @@ from PIL import Image, ImageDraw, ImageFont
 
 
 def value_overlay_lines(values: Iterable[float]) -> List[str]:
-    return [f"B{agent_id} value={float(value):+.3f}" for agent_id, value in enumerate(values)]
+    return [f"B{agent_id} critic={float(value):+.3f}" for agent_id, value in enumerate(values)]
 
 
 def draw_value_overlay(frame: np.ndarray, values: Iterable[float]) -> Image.Image:

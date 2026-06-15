@@ -134,10 +134,18 @@ def choose_hidden_dim(args) -> int:
     return 128
 
 
-def run_episode(env: ToyAcaiPPOEnv, trainer: PPOTrainer, buffer: Optional[RolloutBuffer], deterministic: bool = False):
+def run_episode(
+    env: ToyAcaiPPOEnv,
+    trainer: PPOTrainer,
+    buffer: Optional[RolloutBuffer],
+    deterministic: bool = False,
+    value_gif: Optional[object] = None,
+):
     # 1 エピソード分だけ環境を動かす。
     # 学習時は buffer に経験を保存し、評価時は buffer=None にして方策を更新しない。
     observations = env.reset()
+    if value_gif is not None:
+        env.take_render_frame()
     total_reward = 0.0
     final_info = {}
     action_count = 0
@@ -156,6 +164,10 @@ def run_episode(env: ToyAcaiPPOEnv, trainer: PPOTrainer, buffer: Optional[Rollou
         abs_turn_sum += float(np.sum(np.abs(env_actions[:, 1])))
         fire_sum += float(np.sum(env_actions[:, 2]))
         result = env.step(env_actions)
+        if value_gif is not None:
+            frame = env.take_render_frame()
+            if frame is not None:
+                value_gif.record(frame, values)
         if buffer is not None:
             # PPO では「当時の行動確率」と「価値推定」を後で使うため、
             # 観測・行動・報酬だけでなく log_prob と value も一緒に保存する。
@@ -183,6 +195,8 @@ def add_episode_info_metrics(metrics: dict, info: dict) -> None:
 def evaluate(toy_acai_core, trainer: PPOTrainer, args, episode: int, repo_root: Path):
     # 評価では決定論的に動かす。学習中の探索ノイズを切ることで、
     # その時点の方策がどれくらい安定して勝てるかを見やすくする。
+    from toy_acai_rl.value_gif import ValueGifRecorder
+
     media_dir = args.out_dir / "media"
     gif_path = media_dir / f"episode_{episode:06d}.gif"
     module_dir = args.module_dir.resolve() if args.module_dir is not None else repo_root / "linux-python" / "build"
@@ -191,16 +205,22 @@ def evaluate(toy_acai_core, trainer: PPOTrainer, args, episode: int, repo_root: 
         toy_acai_core,
         max_steps=args.steps,
         render=True,
-        gif_path=gif_path.resolve(),
         module_dir=module_dir,
         random_start_steps=args.random_start_steps,
         rng=np.random.default_rng(args.seed + episode),
     )
+    value_gif = ValueGifRecorder(gif_path, render_interval=env.render_interval)
     try:
-        _, reward, info = run_episode(env, trainer, buffer=None, deterministic=True)
+        _, reward, info = run_episode(
+            env,
+            trainer,
+            buffer=None,
+            deterministic=True,
+            value_gif=value_gif,
+        )
     finally:
-        env.close()
         os.chdir(original_cwd)
+    value_gif.save()
 
     metrics = {
         "episode": episode,

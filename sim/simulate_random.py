@@ -57,10 +57,14 @@ def main():
             os.chdir(module_dir)
     env_kwargs = {
         "render": args.gif is not None,
-        "gif_path": str(args.gif) if args.gif is not None else "",
         "render_interval": RENDER_INTERVAL,
     }
     env = toy_acai_core.BattlefieldEnv(**env_kwargs)
+    gif_recorder = None
+    if args.gif is not None:
+        from toy_acai_rl.value_gif import FrameGifRecorder
+
+        gif_recorder = FrameGifRecorder(args.gif, RENDER_INTERVAL)
     obs = env.reset()
     initial_obs = obs
     fighter_history = [np.array(obs["fighters"], copy=True)]
@@ -69,6 +73,10 @@ def main():
     for step in range(args.steps):
         actions = make_actions(rng, step, toy_acai_core.FIGHTER_COUNT)
         obs = env.step(actions)
+        if gif_recorder is not None:
+            frame = env.take_render_frame()
+            if frame is not None:
+                gif_recorder.record(frame)
         fighter_history.append(np.array(obs["fighters"], copy=True))
         missile_counts.append(len(obs["missiles"]))
 
@@ -85,7 +93,7 @@ def main():
     print("saved", args.output)
 
     if args.gif is not None:
-        env.close_gif()
+        gif_recorder.save()
         print("saved", args.gif)
 
 

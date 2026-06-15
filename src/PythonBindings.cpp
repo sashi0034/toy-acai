@@ -3,7 +3,9 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <cstdint>
 #include <cmath>
+#include <cstring>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -25,6 +27,7 @@ namespace
 {
     using ActionArray = nb::ndarray<const double, nb::shape<toy_acai::FighterCount, 3>, nb::device::cpu, nb::c_contig>;
     using Matrix = nb::ndarray<nb::numpy, double, nb::ndim<2>>;
+    using FrameArray = nb::ndarray<nb::numpy, std::uint8_t, nb::ndim<3>>;
 
     constexpr size_t FighterColumnCount = 9;
     constexpr size_t MissileColumnCount = 8;
@@ -102,6 +105,17 @@ namespace
         return MakeMatrix(values, rows, HitEventColumnCount);
     }
 
+    FrameArray MakeFrameArray(const s3d::Image& image)
+    {
+        const s3d::Size size = image.size();
+        const size_t bytes = image.size_bytes();
+        auto* values = new std::vector<std::uint8_t>(bytes);
+        std::memcpy(values->data(), image.dataAsUint8(), bytes);
+        nb::capsule owner(values, [](void* ptr) noexcept
+                          { delete static_cast<std::vector<std::uint8_t>*>(ptr); });
+        return FrameArray(values->data(), {static_cast<size_t>(size.y), static_cast<size_t>(size.x), size_t{4}}, owner);
+    }
+
     class Siv3DRuntime
     {
     public:
@@ -166,7 +180,7 @@ namespace
     class RenderSession
     {
     public:
-        RenderSession(int renderWidth, int renderHeight, const std::string& gifPath, double renderInterval)
+        RenderSession(int renderWidth, int renderHeight, double renderInterval)
             : m_runtime(AcquireSiv3DRuntime()),
               m_size(renderWidth, renderHeight),
               m_renderInterval(renderInterval)
@@ -184,32 +198,10 @@ namespace
             try
             {
                 resetRenderer();
-
-                if (!gifPath.empty())
-                {
-                    m_gifWriter.emplace();
-                    if (!m_gifWriter->open(s3d::Unicode::FromUTF8(gifPath), m_renderer.imageBuffer().size()))
-                    {
-                        throw std::runtime_error("failed to open GIF writer: " + gifPath);
-                    }
-                }
             }
             catch (const s3d::Error& error)
             {
                 ThrowSiv3DError(error);
-            }
-        }
-
-        ~RenderSession() noexcept
-        {
-            if (!isOwnerThread())
-            {
-                return;
-            }
-
-            if (m_gifWriter && m_gifWriter->isOpen())
-            {
-                (void)m_gifWriter->close();
             }
         }
 
@@ -231,6 +223,7 @@ namespace
                 m_renderer = toy_acai::BattlefieldRenderer{};
                 m_renderer.EnableRenderToImageBuffer(m_size);
                 m_renderTime = 0.0;
+                m_frameReady = false;
             }
             catch (const s3d::Error& error)
             {
@@ -252,14 +245,7 @@ namespace
 
                 m_renderTime -= m_renderInterval;
                 m_renderer.render(context);
-
-                if (m_gifWriter && m_gifWriter->isOpen())
-                {
-                    if (!m_gifWriter->writeFrame(m_renderer.imageBuffer(), s3d::SecondsF{m_renderInterval}))
-                    {
-                        throw std::runtime_error("failed to write GIF frame");
-                    }
-                }
+                m_frameReady = true;
             }
             catch (const s3d::Error& error)
             {
@@ -267,48 +253,33 @@ namespace
             }
         }
 
-        void closeGif()
+        nb::object takeRenderFrame()
         {
             assertOwnerThread();
-            try
+            if (!m_frameReady)
             {
-                if (m_gifWriter && m_gifWriter->isOpen() && !m_gifWriter->close())
-                {
-                    throw std::runtime_error("failed to close GIF writer");
-                }
+                return nb::none();
             }
-            catch (const s3d::Error& error)
-            {
-                ThrowSiv3DError(error);
-            }
-        }
 
-        size_t gifFrameCount() const
-        {
-            assertOwnerThread();
-            return m_gifWriter ? m_gifWriter->frameCount() : 0;
+            m_frameReady = false;
+            return nb::cast(MakeFrameArray(m_renderer.imageBuffer()));
         }
 
     private:
         std::shared_ptr<Siv3DRuntime> m_runtime;
         s3d::Size m_size;
         toy_acai::BattlefieldRenderer m_renderer{};
-        std::optional<s3d::AnimatedGIFWriter> m_gifWriter;
         double m_renderInterval{};
         double m_renderTime{};
+        bool m_frameReady{};
     };
 
     class BattlefieldEnv
     {
     public:
-        BattlefieldEnv(bool render = false, int renderWidth = 960, int renderHeight = 540, const std::string& gifPath = "", double renderInterval = DefaultRenderInterval)
+        BattlefieldEnv(bool render = false, int renderWidth = 960, int renderHeight = 540, double renderInterval = DefaultRenderInterval)
             : m_renderInterval(renderInterval)
         {
-            if (!render && !gifPath.empty())
-            {
-                throw std::invalid_argument("gif_path requires render=True");
-            }
-
             if (render && (renderWidth <= 0 || renderHeight <= 0))
             {
                 throw std::invalid_argument("render_width and render_height must be positive");
@@ -323,7 +294,7 @@ namespace
 
             if (render)
             {
-                m_renderSession = std::make_unique<RenderSession>(renderWidth, renderHeight, gifPath, renderInterval);
+                m_renderSession = std::make_unique<RenderSession>(renderWidth, renderHeight, renderInterval);
             }
         }
 
@@ -377,17 +348,14 @@ namespace
             return observation();
         }
 
-        void closeGif()
+        nb::object takeRenderFrame()
         {
-            if (m_renderSession)
+            if (!m_renderSession)
             {
-                m_renderSession->closeGif();
+                return nb::none();
             }
-        }
 
-        size_t gifFrameCount() const
-        {
-            return m_renderSession ? m_renderSession->gifFrameCount() : 0;
+            return m_renderSession->takeRenderFrame();
         }
 
         double renderInterval() const noexcept
@@ -443,10 +411,9 @@ NB_MODULE(toy_acai_core, m)
     m.attr("RENDER_INTERVAL") = DefaultRenderInterval;
 
     nb::class_<BattlefieldEnv>(m, "BattlefieldEnv")
-        .def(nb::init<bool, int, int, std::string, double>(), "render"_a = false, "render_width"_a = 960, "render_height"_a = 540, "gif_path"_a = "", "render_interval"_a = DefaultRenderInterval)
+        .def(nb::init<bool, int, int, double>(), "render"_a = false, "render_width"_a = 960, "render_height"_a = 540, "render_interval"_a = DefaultRenderInterval)
         .def_prop_ro("render_interval", &BattlefieldEnv::renderInterval)
         .def("reset", &BattlefieldEnv::reset)
         .def("step", &BattlefieldEnv::step, "actions"_a)
-        .def("close_gif", &BattlefieldEnv::closeGif)
-        .def("gif_frame_count", &BattlefieldEnv::gifFrameCount);
+        .def("take_render_frame", &BattlefieldEnv::takeRenderFrame);
 }

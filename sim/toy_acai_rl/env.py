@@ -464,7 +464,6 @@ class ToyAcaiPPOEnv:
         toy_acai_core,
         max_steps: int,
         render: bool = False,
-        gif_path: Optional[Path] = None,
         module_dir: Optional[Path] = None,
         render_interval: float = RENDER_INTERVAL,
         random_start_steps: int = 0,
@@ -475,7 +474,6 @@ class ToyAcaiPPOEnv:
         self.opponent = RuleBasedOpponent()
         self.step_count = 0
         self.render = render
-        self.gif_path = gif_path
         self.module_dir = module_dir
         self.render_interval = render_interval
         self.random_start_steps = random_start_steps
@@ -484,18 +482,14 @@ class ToyAcaiPPOEnv:
         self.last_obs = None
 
     def _make_env(self):
-        # render=True のときだけ GIF 出力の設定を有効にする。
-        if self.render and self.gif_path is not None:
-            self.gif_path.parent.mkdir(parents=True, exist_ok=True)
+        # render=True のときだけ Siv3D の描画リソース設定を有効にする。
+        if self.render:
             if self.module_dir is not None and (self.module_dir / "resources").exists():
                 os.chdir(self.module_dir)
         env_kwargs = {
             "render": self.render,
             "render_width": int(1920 * 0.3),
             "render_height": int(1080 * 0.3),
-            "gif_path": (
-                str(self.gif_path) if self.render and self.gif_path is not None else ""
-            ),
             "render_interval": self.render_interval,
         }
         return self.core.BattlefieldEnv(**env_kwargs)
@@ -579,9 +573,10 @@ class ToyAcaiPPOEnv:
             info,
         )
 
-    def close(self) -> None:
-        if self.render:
-            self.env.close_gif()
+    def take_render_frame(self):
+        if not self.render or not hasattr(self.env, "take_render_frame"):
+            return None
+        return self.env.take_render_frame()
 
     @staticmethod
     def _team_alive(fighters: np.ndarray, team_id: int) -> int:

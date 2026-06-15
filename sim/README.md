@@ -56,7 +56,7 @@ TOY_ACAI_RESUME_CHECKPOINT=outputs/rl/default/checkpoints/ppo_002000.pt \
 
 観測特徴量や報酬設計を変えた後は、新規学習してください。
 現在の学習はエピソード終端の `red_alive`、`blue_alive`、終了ステップから計算する勝敗スコアを主報酬にします。
-加えて各 Blue 機体に、step ごとの生存補助報酬、移動距離に応じたごく小さな補助報酬、自機のミサイルで Red 機体を撃墜したときの補助報酬を与えます。
+加えて各 Blue 機体に、step ごとの生存補助報酬、移動距離に応じたごく小さな補助報酬、自機のミサイルで Red 機体を撃墜したときの本人補助報酬、自機が撃墜されたときの本人ペナルティを与えます。
 `outputs/rl/default/checkpoints/ppo_latest.pt` は checkpoint 保存ごとにも更新されるため、途中終了後も直近の保存済み方策を参照できます。
 
 Slack 投稿が多すぎる場合は、まず `TOY_ACAI_RENDER_EVERY` を大きくしてください。
@@ -69,7 +69,7 @@ Slack 投稿が多すぎる場合は、まず `TOY_ACAI_RENDER_EVERY` を大き�
 生成済み GIF の数自体を減らしたい場合は `TOY_ACAI_RENDER_EVERY` を変更してください。
 
 学習中に作られた GIF は `outputs/rl/default/slack/pending/*.json` として Slack 送信用にスプールされます。
-学習開始時に uploader が Slack へ親メッセージを投稿し、以降の GIF 投稿はそのメッセージのスレッドにまとまります。
+学習開始時に uploader が `docs/rl_model_overview.md` を添付した Slack 親メッセージを投稿し、以降の GIF 投稿はそのメッセージのスレッドにまとまります。
 Slack の設定はリポジトリ直下の `.env` に置けます。まず `.env.example` をコピーして、ログインノードで実際の値を入れてください:
 
 ```bash
@@ -77,7 +77,7 @@ cp .env.example .env
 $EDITOR .env
 ```
 
-Slack app の Bot Token Scopes には `files:write` と `chat:write` が必要です。
+Slack app の Bot Token Scopes には `files:write`、`files:read`、`chat:write` が必要です。
 また、Bot user を `SLACK_CHANNEL_ID` のチャンネルに参加させておいてください。
 
 計算ノードからはネット通信せず、ログインノードで次を起動してください:

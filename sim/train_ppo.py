@@ -30,9 +30,7 @@ EPISODE_INFO_METRICS = (
     "movement_reward",
     "mean_movement_distance",
     "kill_reward",
-    "team_kill_reward",
     "death_penalty",
-    "team_loss_penalty",
     "blue_kills",
     "blue_losses",
     "hit_events",
@@ -62,11 +60,6 @@ def parse_args():
     parser.add_argument("--fire-bias-init", type=float, default=0.4)
     parser.add_argument("--log-std-init", type=float, default=-0.8)
     parser.add_argument("--hidden-dim", type=int, default=None)
-    parser.add_argument(
-        "--separate-policies",
-        action="store_true",
-        help="Train one independent policy per fighter instead of sharing a single policy.",
-    )
     parser.add_argument("--random-start-steps", type=int, default=120)
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--resume-checkpoint", type=Path, default=None)
@@ -102,7 +95,7 @@ def make_spool_record(spool_root: Path, gif_path: Path, metrics: dict) -> None:
     tmp_path.replace(final_path)
 
 
-def make_slack_thread_root_record(spool_root: Path, args) -> None:
+def make_slack_thread_root_record(spool_root: Path, args, repo_root: Path) -> None:
     pending = spool_root / "pending"
     pending.mkdir(parents=True, exist_ok=True)
     record_id = f"000000_thread_root_{int(time.time())}"
@@ -110,6 +103,7 @@ def make_slack_thread_root_record(spool_root: Path, args) -> None:
     final_path = pending / f"{record_id}.json"
     payload = {
         "type": "thread_root",
+        "attachment_path": str((repo_root / "docs" / "rl_model_overview.md").resolve()),
         "comment": (
             "toy-acai PPO training started: "
             f"episodes={args.episodes}, steps={args.steps}, render_every={args.render_every}, "
@@ -250,7 +244,7 @@ def main():
     elif not args.slack_spool.is_absolute():
         args.slack_spool = (Path.cwd() / args.slack_spool).resolve()
     if args.slack_spool is not None:
-        make_slack_thread_root_record(args.slack_spool, args)
+        make_slack_thread_root_record(args.slack_spool, args, repo_root)
 
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
@@ -278,7 +272,6 @@ def main():
         config,
         device,
         agent_count=agent_count,
-        shared_policy=not args.separate_policies,
     )
     start_episode = 1
     if args.resume_checkpoint is not None:

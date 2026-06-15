@@ -15,8 +15,6 @@ from toy_acai_rl.env import (  # noqa: E402
     AUX_KILL_REWARD,
     AUX_MOVEMENT_REWARD_PER_DISTANCE,
     AUX_SURVIVAL_REWARD_PER_STEP,
-    AUX_TEAM_KILL_REWARD,
-    AUX_TEAM_LOSS_PENALTY,
     TEAM_LEARN,
     TEAM_RULE,
     ToyAcaiPPOEnv,
@@ -94,7 +92,7 @@ class AuxiliaryRewardsTest(unittest.TestCase):
 
         rewards, info = auxiliary_agent_rewards(current_obs, previous_obs=previous_obs)
 
-        reward_distance = np.hypot(1600.0, 900.0) * 0.25
+        reward_distance = np.hypot(1600.0, 900.0)
         expected = np.array(
             [
                 base_step_reward(blue_alive=3, red_alive=4)
@@ -113,15 +111,14 @@ class AuxiliaryRewardsTest(unittest.TestCase):
         )
         self.assertAlmostEqual(info["mean_movement_distance"], (5.0 + 0.0 + 6.0) / 3.0)
 
-    def test_blue_hit_event_rewards_shooter_and_surviving_team(self):
+    def test_blue_hit_event_rewards_shooter_only(self):
         rewards, info = auxiliary_agent_rewards(make_obs(hit_events=[[2, 0, 4, 1]]))
 
         expected = np.full((4,), base_step_reward(), dtype=np.float32)
-        expected += AUX_TEAM_KILL_REWARD
         expected[2] += AUX_KILL_REWARD
         np.testing.assert_allclose(rewards, expected)
         self.assertAlmostEqual(info["kill_reward"], AUX_KILL_REWARD)
-        self.assertAlmostEqual(info["team_kill_reward"], 4 * AUX_TEAM_KILL_REWARD)
+        self.assertNotIn("team_kill_reward", info)
         self.assertEqual(info["blue_kills"], 1.0)
         self.assertEqual(info["hit_events"], 1.0)
 
@@ -151,16 +148,16 @@ class AuxiliaryRewardsTest(unittest.TestCase):
         alive_reward = base_step_reward(blue_alive=3, red_alive=4)
         expected = np.array(
             [
-                alive_reward - AUX_TEAM_LOSS_PENALTY,
-                -AUX_DEATH_PENALTY - AUX_TEAM_LOSS_PENALTY,
-                alive_reward - AUX_TEAM_LOSS_PENALTY,
-                alive_reward - AUX_TEAM_LOSS_PENALTY,
+                alive_reward,
+                -AUX_DEATH_PENALTY,
+                alive_reward,
+                alive_reward,
             ],
             dtype=np.float32,
         )
         np.testing.assert_allclose(rewards, expected)
         self.assertAlmostEqual(info["death_penalty"], AUX_DEATH_PENALTY)
-        self.assertAlmostEqual(info["team_loss_penalty"], 4 * AUX_TEAM_LOSS_PENALTY)
+        self.assertNotIn("team_loss_penalty", info)
         self.assertEqual(info["blue_losses"], 1.0)
 
     def test_terminal_step_combines_terminal_score_and_auxiliary_rewards(self):
@@ -186,7 +183,7 @@ class AuxiliaryRewardsTest(unittest.TestCase):
         )
         expected = np.full(
             (4,),
-            score + base_step_reward(blue_alive=4, red_alive=3) + AUX_TEAM_KILL_REWARD,
+            score + base_step_reward(blue_alive=4, red_alive=3),
             dtype=np.float32,
         )
         expected[1] += AUX_KILL_REWARD

@@ -83,6 +83,83 @@ def upload_bytes(url: str, file_path: Path) -> None:
         response.read()
 
 
+def upload_file(
+    token: str,
+    channel_id: str,
+    file_path: Path,
+    initial_comment: str = "",
+    thread_ts: Optional[str] = None,
+) -> str:
+    upload_url = slack_request(
+        "files.getUploadURLExternal",
+        token,
+        {"filename": file_path.name, "length": str(file_path.stat().st_size)},
+    )
+    upload_bytes(upload_url["upload_url"], file_path)
+
+    file_info = {"id": upload_url["file_id"], "title": file_path.name}
+    complete_payload = {
+        "files": json.dumps([file_info]),
+        "channel_id": channel_id,
+        "initial_comment": initial_comment,
+    }
+    if thread_ts:
+        complete_payload["thread_ts"] = thread_ts
+    slack_request("files.completeUploadExternal", token, complete_payload)
+    return str(upload_url["file_id"])
+
+
+def _share_ts_from_entry(share: object) -> Optional[str]:
+    if not isinstance(share, dict):
+        return None
+    ts = share.get("ts") or share.get("thread_ts")
+    return str(ts) if ts else None
+
+
+def _walk_share_entries(value: object):
+    if isinstance(value, dict):
+        yield value
+        for child in value.values():
+            yield from _walk_share_entries(child)
+    elif isinstance(value, list):
+        for child in value:
+            yield from _walk_share_entries(child)
+
+
+def _extract_file_share_ts(file_info: dict, channel_id: str) -> Optional[str]:
+    shares = file_info.get("shares", {})
+    for visibility in ("public", "private"):
+        for share in shares.get(visibility, {}).get(channel_id, []):
+            ts = _share_ts_from_entry(share)
+            if ts:
+                return ts
+    for share in _walk_share_entries(shares):
+        channel = share.get("channel") or share.get("channel_id")
+        if channel not in (None, channel_id):
+            continue
+        ts = _share_ts_from_entry(share)
+        if ts:
+            return ts
+    return None
+
+
+def file_share_ts(token: str, file_id: str, channel_id: str, attempts: int = 8, delay_seconds: float = 2.0) -> str:
+    last_file_info = {}
+    for attempt in range(max(1, attempts)):
+        result = slack_request("files.info", token, {"file": file_id})
+        last_file_info = result.get("file", {})
+        ts = _extract_file_share_ts(last_file_info, channel_id)
+        if ts:
+            return ts
+        if attempt + 1 < attempts:
+            time.sleep(delay_seconds)
+    share_keys = sorted((last_file_info.get("shares") or {}).keys())
+    raise RuntimeError(
+        f"could not find Slack share ts for file {file_id} in {channel_id}; "
+        f"share groups={share_keys}"
+    )
+
+
 class SlackThread:
     def __init__(self, spool: Path, token: str, channel_id: str, dry_run: bool):
         self.spool = spool
@@ -104,13 +181,22 @@ class SlackThread:
         tmp_path.write_text(f"{thread_ts}\n", encoding="utf-8")
         tmp_path.replace(self.state_path)
 
-    def post_root(self, text: str) -> str:
+    def post_root(self, text: str, attachment_path: Optional[Path] = None) -> str:
         if self.dry_run:
             self.thread_ts = self.thread_ts or "dry-run-thread"
-            print(f"dry-run: would post thread-root to {self.channel_id}: {text}")
+            if attachment_path is not None:
+                print(f"dry-run: would post thread-root file {attachment_path} to {self.channel_id}: {text}")
+            else:
+                print(f"dry-run: would post thread-root to {self.channel_id}: {text}")
             return self.thread_ts
 
-        self.thread_ts = post_message(self.token, self.channel_id, text)
+        if attachment_path is None:
+            self.thread_ts = post_message(self.token, self.channel_id, text)
+        else:
+            if not attachment_path.exists():
+                raise FileNotFoundError(f"thread root attachment does not exist: {attachment_path}")
+            file_id = upload_file(self.token, self.channel_id, attachment_path, initial_comment=text)
+            self.thread_ts = file_share_ts(self.token, file_id, self.channel_id)
         self._write_thread_ts(self.thread_ts)
         print(f"created Slack thread {self.thread_ts} in {self.channel_id}")
         return self.thread_ts
@@ -124,7 +210,29 @@ class SlackThread:
 def upload_record(record_path: Path, token: str, channel_id: str, thread: SlackThread, dry_run: bool) -> None:
     record = json.loads(record_path.read_text(encoding="utf-8"))
     if record.get("type") == "thread_root":
-        thread.post_root(record.get("comment", "toy-acai PPO training started"))
+        attachment_path = record.get("attachment_path")
+        if attachment_path and not dry_run:
+            file_id = record.get("uploaded_file_id")
+            if not file_id:
+                path = Path(attachment_path)
+                if not path.exists():
+                    raise FileNotFoundError(f"thread root attachment does not exist: {path}")
+                file_id = upload_file(
+                    token,
+                    channel_id,
+                    path,
+                    initial_comment=record.get("comment", "toy-acai PPO training started"),
+                )
+                record["uploaded_file_id"] = file_id
+                record_path.write_text(json.dumps(record, indent=2, sort_keys=True), encoding="utf-8")
+            thread.thread_ts = file_share_ts(token, str(file_id), channel_id)
+            thread._write_thread_ts(thread.thread_ts)
+            print(f"created Slack thread {thread.thread_ts} in {channel_id}")
+            return
+        thread.post_root(
+            record.get("comment", "toy-acai PPO training started"),
+            Path(attachment_path) if attachment_path else None,
+        )
         return
 
     gif_path = Path(record["gif_path"])
@@ -136,21 +244,7 @@ def upload_record(record_path: Path, token: str, channel_id: str, thread: SlackT
         print(f"dry-run: would upload {gif_path} to {channel_id} thread {thread_ts}: {record.get('comment', '')}")
         return
 
-    upload_url = slack_request(
-        "files.getUploadURLExternal",
-        token,
-        {"filename": gif_path.name, "length": str(gif_path.stat().st_size)},
-    )
-    upload_bytes(upload_url["upload_url"], gif_path)
-
-    file_info = {"id": upload_url["file_id"], "title": gif_path.name}
-    complete_payload = {
-        "files": json.dumps([file_info]),
-        "channel_id": channel_id,
-        "initial_comment": record.get("comment", ""),
-    }
-    complete_payload["thread_ts"] = thread_ts
-    slack_request("files.completeUploadExternal", token, complete_payload)
+    upload_file(token, channel_id, gif_path, initial_comment=record.get("comment", ""), thread_ts=thread_ts)
     print(f"uploaded {gif_path} to {channel_id} thread {thread_ts}")
 
 

@@ -272,37 +272,6 @@ class _SingleAgentPPOTrainer:
         data["advantages"] = normalize_advantages_tensor(data["advantages"])
         return self._update_tensors(data)
 
-    def update_many(
-        self,
-        buffers: List[AgentRolloutBuffer],
-        last_values: np.ndarray,
-    ) -> Dict[str, float]:
-        # 共有方策の場合、全機の経験をまとめて「同じ 1 つの方策」を更新する。
-        # これによりデータ量が増え、各機が同じ操作ルールを学ぶ。
-        last_values = np.asarray(last_values, dtype=np.float32)
-        if len(buffers) != len(last_values):
-            raise ValueError(
-                f"expected {len(buffers)} last values, got {len(last_values)}"
-            )
-        per_agent_data = [
-            buffer.tensors(
-                self.device,
-                float(last_value),
-                self.config,
-                normalize_advantages=False,
-            )
-            for buffer, last_value in zip(buffers, last_values)
-            if len(buffer) > 0
-        ]
-        if not per_agent_data:
-            return {}
-        data = {
-            key: torch.cat([agent_data[key] for agent_data in per_agent_data], dim=0)
-            for key in per_agent_data[0]
-        }
-        data["advantages"] = normalize_advantages_tensor(data["advantages"])
-        return self._update_tensors(data)
-
     def _update_tensors(self, data: Dict[str, torch.Tensor]) -> Dict[str, float]:
         count = data["obs"].shape[0]
         indices = np.arange(count)
@@ -366,7 +335,7 @@ class _SingleAgentPPOTrainer:
         return stats
 
 class PPOTrainer:
-    """複数の味方機をまとめて扱うラッパー。共有方策と個別方策の両方に対応する。"""
+    """複数の味方機を個別方策としてまとめて扱うラッパー。"""
 
     def __init__(
         self,
@@ -374,23 +343,14 @@ class PPOTrainer:
         config: PPOConfig,
         device: torch.device,
         agent_count: int = 4,
-        shared_policy: bool = True,
     ):
         self.config = config
         self.device = device
         self.agent_count = agent_count
-        self.shared_policy = shared_policy
-        if shared_policy:
-            # 共有方策: 全機が同じモデルを使う。サンプル効率が良く、まずはこちらが分かりやすい。
-            self.shared_agent = _SingleAgentPPOTrainer(obs_dim, config, device)
-            self.agents = [self.shared_agent for _ in range(agent_count)]
-        else:
-            # 個別方策: 各機が別々のモデルを持つ。役割分担を学べる可能性があるが難しくなる。
-            self.shared_agent = None
-            self.agents = [
-                _SingleAgentPPOTrainer(obs_dim, config, device)
-                for _ in range(agent_count)
-            ]
+        self.agents = [
+            _SingleAgentPPOTrainer(obs_dim, config, device)
+            for _ in range(agent_count)
+        ]
 
     def act(self, observations: np.ndarray, deterministic: bool = False):
         # observations は [agent_count, obs_dim]。各行を各機の trainer に渡す。
@@ -433,10 +393,6 @@ class PPOTrainer:
                 f"buffer agent_count={buffer.agent_count} does not match trainer agent_count={self.agent_count}"
             )
         last_values = np.asarray(last_values, dtype=np.float32)
-        if self.shared_policy:
-            stats = self.shared_agent.update_many(buffer.agent_buffers, last_values)
-            stats["shared_policy"] = 1.0
-            return stats
         per_agent_stats = [
             agent.update(buffer.agent_buffers[agent_id], float(last_values[agent_id]))
             for agent_id, agent in enumerate(self.agents)
@@ -452,9 +408,9 @@ class PPOTrainer:
         path.parent.mkdir(parents=True, exist_ok=True)
         torch.save(
             {
+                "checkpoint_format": "individual_v1",
                 "models": [agent.model.state_dict() for agent in self.agents],
                 "agent_count": self.agent_count,
-                "shared_policy": self.shared_policy,
                 "config": self.config.__dict__,
                 **extra,
             },
@@ -463,12 +419,13 @@ class PPOTrainer:
 
     def load(self, path: Path) -> Dict[str, object]:
         # checkpoint の agent 数や形式を確認してから読み込む。
-        # 共有方策へ読み込む場合は、保存されている各機の重みを平均して 1 つにする。
         checkpoint = torch.load(path, map_location=self.device)
-        if "models" not in checkpoint:
+        if checkpoint.get("checkpoint_format") != "individual_v1":
             raise ValueError(
-                "checkpoint uses the old single-model format; start a new run or provide a multi-agent checkpoint"
+                "checkpoint must use the individual_v1 format; start a new run"
             )
+        if "models" not in checkpoint:
+            raise ValueError("checkpoint must contain per-agent models")
         checkpoint_models = checkpoint["models"]
         checkpoint_agent_count = int(checkpoint.get("agent_count", len(checkpoint_models)))
         if checkpoint_agent_count != self.agent_count:
@@ -479,13 +436,8 @@ class PPOTrainer:
             raise ValueError(
                 f"checkpoint has {len(checkpoint_models)} models, expected {self.agent_count}"
             )
-        if self.shared_policy:
-            self.shared_agent.model.load_state_dict(
-                self._average_state_dicts(checkpoint_models)
-            )
-        else:
-            for agent, state_dict in zip(self.agents, checkpoint_models):
-                agent.model.load_state_dict(state_dict)
+        for agent, state_dict in zip(self.agents, checkpoint_models):
+            agent.model.load_state_dict(state_dict)
         return checkpoint
 
     @staticmethod
@@ -497,16 +449,3 @@ class PPOTrainer:
             key: float(np.mean([stats[key] for stats in per_agent_stats if key in stats]))
             for key in keys
         }
-
-    @staticmethod
-    def _average_state_dicts(state_dicts: List[Dict[str, torch.Tensor]]) -> Dict[str, torch.Tensor]:
-        if not state_dicts:
-            raise ValueError("checkpoint does not contain any model state dicts")
-        averaged = {}
-        for key in state_dicts[0]:
-            values = [state_dict[key] for state_dict in state_dicts]
-            if torch.is_floating_point(values[0]):
-                averaged[key] = torch.stack(values, dim=0).mean(dim=0)
-            else:
-                averaged[key] = values[0]
-        return averaged

@@ -11,14 +11,11 @@ TEAM_RULE = 1
 # 観測に入れるミサイル数を固定する。ニューラルネットは入力長が固定である必要があるため、
 # 足りない分は 0 で埋める。
 MAX_TRACKED_MISSILES = 8
-MISSILE_OBS_FEATURES = 14
+MISSILE_OBS_FEATURES = 7
 MAX_SPEED = 360.0
-OUT_OF_BOUNDS_DEATH_TIME = 3.0
 RENDER_INTERVAL = 0.1
 AUX_KILL_REWARD = 1.0
-AUX_TEAM_KILL_REWARD = 0.2
 AUX_DEATH_PENALTY = 1.0
-AUX_TEAM_LOSS_PENALTY = 0.2
 AUX_ALIVE_ADVANTAGE_REWARD_PER_STEP = 0.002
 AUX_SURVIVAL_REWARD_PER_STEP = 0.0003
 AUX_MOVEMENT_REWARD_PER_DISTANCE = 0.03
@@ -131,16 +128,11 @@ def _boundary_ray_features(
     field_h: float,
     diag: float,
 ) -> list:
-    # 前・斜め・横・後ろの 8 方向について、境界までの距離を観測特徴量にする。
+    # 前・左・右の 3 方向について、境界までの距離を観測特徴量にする。
     directions = (
         forward,
-        forward + right,
-        right,
-        -forward + right,
-        -forward,
-        -forward - right,
         -right,
-        forward - right,
+        right,
     )
     features = []
     for direction in directions:
@@ -196,12 +188,9 @@ def build_agent_observations(
         features.extend(
             boundary_rays
             + [
-                # 自機の基本状態。速度や残り時間など、行動判断に必要な量を正規化して入れる。
+                # 自機の基本状態。速度と生存フラグを観測に入れる。
                 speed / MAX_SPEED,
-                float(fighter[6]),
-                float(fighter[7]),
-                1.0 if float(fighter[7]) <= 0.0 else 0.0,
-                float(fighter[8]) / OUT_OF_BOUNDS_DEATH_TIME,
+                1.0 if float(fighter[6]) > 0.0 else 0.0,
             ]
         )
 
@@ -229,15 +218,13 @@ def build_agent_observations(
             # 絶対座標よりも、旋回や射撃の判断に直接つながりやすい。
             features.extend(
                 [
-                    float(np.dot(rel, forward)) / diag,
-                    float(np.dot(rel, right)) / diag,
                     distance / diag,
                     math.cos(bearing_delta),
                     math.sin(bearing_delta),
                     math.cos(_angle_delta(other_yaw, yaw)),
                     math.sin(_angle_delta(other_yaw, yaw)),
                     other_speed / MAX_SPEED,
-                    float(other[6]),
+                    1.0 if float(other[6]) > 0.0 else 0.0,
                     1.0 if int(other[0]) == learner_team else -1.0,
                     float(np.clip(closing, -2.0, 2.0)),
                     in_fire_arc,
@@ -247,6 +234,8 @@ def build_agent_observations(
 
         missile_features = []
         for missile in missiles:
+            if int(missile[6]) == learner_team:
+                continue
             rel = missile[0:2] - fighter[2:4]
             distance = math.hypot(float(rel[0]), float(rel[1]))
             missile_features.append((distance, missile, rel))
@@ -272,19 +261,12 @@ def build_agent_observations(
             # 単に近いだけでなく、危険度を学習しやすくするために入れている。
             features.extend(
                 [
-                    float(np.dot(rel, forward)) / diag,
-                    float(np.dot(rel, right)) / diag,
                     distance / diag,
                     float(np.clip(missile_closing, -2.0, 2.0)),
                     math.cos(bearing_delta),
                     math.sin(bearing_delta),
                     math.cos(_angle_delta(missile_yaw, yaw)),
                     math.sin(_angle_delta(missile_yaw, yaw)),
-                    float(missile[3]) / MAX_SPEED,
-                    float(missile[4]) / 6.0,
-                    float(missile[5]) / 1.1,
-                    1.0 if int(missile[6]) == learner_team else -1.0,
-                    1.0 if int(missile[7]) == int(agent_idx) else 0.0,
                     float(np.clip(incoming_alignment, -1.0, 1.0)),
                 ]
             )
@@ -332,9 +314,7 @@ def auxiliary_agent_rewards(
     learner_team: int = TEAM_LEARN,
     opponent_team: int = TEAM_RULE,
     kill_reward: float = AUX_KILL_REWARD,
-    team_kill_reward: float = AUX_TEAM_KILL_REWARD,
     death_penalty: float = AUX_DEATH_PENALTY,
-    team_loss_penalty: float = AUX_TEAM_LOSS_PENALTY,
     alive_advantage_reward_per_step: float = AUX_ALIVE_ADVANTAGE_REWARD_PER_STEP,
     survival_reward_per_step: float = AUX_SURVIVAL_REWARD_PER_STEP,
     movement_reward_per_distance: float = AUX_MOVEMENT_REWARD_PER_DISTANCE,
@@ -402,12 +382,7 @@ def auxiliary_agent_rewards(
         # 撃墜した本人には大きめの報酬を与える。
         rewards[agent_idx] += float(kill_reward)
         blue_kills += 1
-    if blue_kills:
-        # チームメイトの撃墜も全員に少し配る。協調を促すための報酬。
-        rewards[alive] += float(team_kill_reward) * blue_kills
-
     kill_reward_total = float(blue_kills * kill_reward)
-    team_kill_reward_total = float(np.sum(alive) * team_kill_reward * blue_kills)
     blue_losses = 0
     if previous_obs is not None:
         for fighter_idx in learner_indices:
@@ -418,21 +393,15 @@ def auxiliary_agent_rewards(
             # 前ステップでは生存、今ステップでは非生存なら、その機が撃墜されたとみなす。
             rewards[agent_idx] -= float(death_penalty)
             blue_losses += 1
-    if blue_losses:
-        # 味方の損失は全員にも小さく罰を与え、単独で突っ込む行動を抑える。
-        rewards -= float(team_loss_penalty) * blue_losses
 
     death_penalty_total = float(blue_losses * death_penalty)
-    team_loss_penalty_total = float(len(learner_indices) * team_loss_penalty * blue_losses)
     info = {
         "survival_reward": survival_reward,
         "advantage_reward": advantage_reward,
         "movement_reward": movement_reward,
         "mean_movement_distance": mean_movement_distance,
         "kill_reward": kill_reward_total,
-        "team_kill_reward": team_kill_reward_total,
         "death_penalty": death_penalty_total,
-        "team_loss_penalty": team_loss_penalty_total,
         "blue_kills": float(blue_kills),
         "blue_losses": float(blue_losses),
         "hit_events": float(hit_events.shape[0]),

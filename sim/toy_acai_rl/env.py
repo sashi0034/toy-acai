@@ -349,10 +349,13 @@ def auxiliary_agent_rewards(
     learner_indices = _team_indices(fighters, learner_team, learner_count)
     rewards = np.zeros((len(learner_indices),), dtype=np.float32)
 
-    alive = fighters[learner_indices, 6] > 0.0
-    # 生きているだけで小さく加点し、すぐに墜ちる行動を避けやすくする。
-    rewards[alive] += float(survival_reward_per_step)
-    survival_reward = float(np.sum(alive) * survival_reward_per_step)
+    learner_fighters = fighters[learner_indices]
+    alive = learner_fighters[:, 6] > 0.0
+    in_bounds = learner_fighters[:, 8] <= 0.0
+    survival_eligible = alive & in_bounds
+    # 生きていて、かつ戦場内にいる機体だけを小さく加点する。
+    rewards[survival_eligible] += float(survival_reward_per_step)
+    survival_reward = float(np.sum(survival_eligible) * survival_reward_per_step)
     team_size = max(1, len(learner_indices))
     opponent_size = max(
         1,

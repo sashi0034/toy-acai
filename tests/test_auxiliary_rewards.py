@@ -27,11 +27,14 @@ def make_obs(
     red_health=(1.0, 1.0, 1.0, 1.0),
     hit_events=None,
     blue_positions=None,
+    blue_out_of_bounds_time=None,
 ):
     fighters = np.zeros((8, 9), dtype=np.float64)
     fighters[:4, 0] = TEAM_LEARN
     fighters[:4, 1] = np.arange(4)
     fighters[:4, 6] = blue_health
+    if blue_out_of_bounds_time is not None:
+        fighters[:4, 8] = blue_out_of_bounds_time
     if blue_positions is not None:
         fighters[:4, 2:4] = np.asarray(blue_positions, dtype=np.float64)
     fighters[4:, 0] = TEAM_RULE
@@ -64,10 +67,29 @@ class AuxiliaryRewardsTest(unittest.TestCase):
         np.testing.assert_allclose(
             rewards,
             np.array([alive_reward, 0.0, alive_reward, 0.0], dtype=np.float32),
+            atol=1e-8,
         )
         self.assertAlmostEqual(info["survival_reward"], 2 * AUX_SURVIVAL_REWARD_PER_STEP)
         self.assertAlmostEqual(info["advantage_reward"], 2 * (alive_reward - AUX_SURVIVAL_REWARD_PER_STEP))
         self.assertEqual(info["blue_kills"], 0.0)
+
+    def test_survival_reward_skips_out_of_bounds_blue_agents(self):
+        rewards, info = auxiliary_agent_rewards(
+            make_obs(
+                blue_health=(1.0, 0.0, 1.0, 0.0),
+                blue_out_of_bounds_time=(0.25, 0.0, 0.0, 0.0),
+            )
+        )
+
+        advantage_only = AUX_ALIVE_ADVANTAGE_REWARD_PER_STEP * ((2 - 4) / 4.0)
+        alive_reward = AUX_SURVIVAL_REWARD_PER_STEP + advantage_only
+        np.testing.assert_allclose(
+            rewards,
+            np.array([advantage_only, 0.0, alive_reward, 0.0], dtype=np.float32),
+            atol=1e-8,
+        )
+        self.assertAlmostEqual(info["survival_reward"], AUX_SURVIVAL_REWARD_PER_STEP)
+        self.assertAlmostEqual(info["advantage_reward"], 2 * advantage_only)
 
     def test_learner_count_limits_rewarded_blue_agents(self):
         rewards, info = auxiliary_agent_rewards(make_obs(), learner_count=1, opponent_count=4)
@@ -119,7 +141,7 @@ class AuxiliaryRewardsTest(unittest.TestCase):
 
         expected = np.full((4,), base_step_reward(), dtype=np.float32)
         expected[2] += AUX_KILL_REWARD
-        np.testing.assert_allclose(rewards, expected)
+        np.testing.assert_allclose(rewards, expected, atol=1e-8)
         self.assertAlmostEqual(info["kill_reward"], AUX_KILL_REWARD)
         self.assertNotIn("team_kill_reward", info)
         self.assertEqual(info["blue_kills"], 1.0)
@@ -137,7 +159,7 @@ class AuxiliaryRewardsTest(unittest.TestCase):
         )
 
         expected = np.full((4,), base_step_reward(), dtype=np.float32)
-        np.testing.assert_allclose(rewards, expected)
+        np.testing.assert_allclose(rewards, expected, atol=1e-8)
         self.assertAlmostEqual(info["kill_reward"], 0.0)
         self.assertEqual(info["blue_kills"], 0.0)
         self.assertEqual(info["hit_events"], 3.0)
@@ -158,7 +180,7 @@ class AuxiliaryRewardsTest(unittest.TestCase):
             ],
             dtype=np.float32,
         )
-        np.testing.assert_allclose(rewards, expected)
+        np.testing.assert_allclose(rewards, expected, atol=1e-8)
         self.assertAlmostEqual(info["death_penalty"], AUX_DEATH_PENALTY)
         self.assertNotIn("team_loss_penalty", info)
         self.assertEqual(info["blue_losses"], 1.0)

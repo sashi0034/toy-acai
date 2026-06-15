@@ -376,23 +376,23 @@ def auxiliary_agent_rewards(
     if previous_obs is not None:
         previous_fighters = np.asarray(previous_obs["fighters"], dtype=np.float64)
         previous_alive = previous_fighters[learner_indices, 6] > 0.0
-        movement_eligible = alive & previous_alive
+        movement_tracked = alive & previous_alive
+        movement_eligible = movement_tracked & in_bounds
         movement_distance = np.linalg.norm(
             fighters[learner_indices, 2:4] - previous_fighters[learner_indices, 2:4],
             axis=1,
         )
-        # ノロノロ対策として、実際に移動した距離をごく小さく加点していた。
-        # 一旦、移動距離は報酬に入れない。
-        # field_w = float(obs["battlefield"][2])
-        # field_h = float(obs["battlefield"][3])
-        # reward_distance = max(math.hypot(field_w, field_h), 1e-6)
-        # clipped_movement = np.clip(movement_distance / reward_distance, 0.0, 1.0)
-        # movement_rewards = clipped_movement * 0.10
-        # movement_rewards[~movement_eligible] = 0.0
-        # rewards += movement_rewards.astype(np.float32)
-        # movement_reward = float(np.sum(movement_rewards))
-        if np.any(movement_eligible):
-            mean_movement_distance = float(np.mean(movement_distance[movement_eligible]))
+        # ノロノロ対策として、戦場内で実際に移動した距離をごく小さく加点する。
+        field_w = float(obs["battlefield"][2])
+        field_h = float(obs["battlefield"][3])
+        reward_distance = max(math.hypot(field_w, field_h), 1e-6)
+        clipped_movement = np.clip(movement_distance / reward_distance, 0.0, 1.0)
+        movement_rewards = clipped_movement * 0.10
+        movement_rewards[~movement_eligible] = 0.0
+        rewards += movement_rewards.astype(np.float32)
+        movement_reward = float(np.sum(movement_rewards))
+        if np.any(movement_tracked):
+            mean_movement_distance = float(np.mean(movement_distance[movement_tracked]))
 
     fighter_to_agent = {
         int(fighter_idx): agent_idx

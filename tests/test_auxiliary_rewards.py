@@ -57,6 +57,10 @@ def base_step_reward(blue_alive=4, red_alive=4):
     )
 
 
+def movement_step_reward(distance):
+    return np.clip(distance / np.hypot(1600.0, 900.0), 0.0, 1.0) * 0.10
+
+
 class AuxiliaryRewardsTest(unittest.TestCase):
     def test_survival_reward_only_goes_to_alive_blue_agents(self):
         rewards, info = auxiliary_agent_rewards(
@@ -101,7 +105,7 @@ class AuxiliaryRewardsTest(unittest.TestCase):
         self.assertAlmostEqual(info["survival_reward"], AUX_SURVIVAL_REWARD_PER_STEP)
         self.assertAlmostEqual(info["advantage_reward"], 0.0)
 
-    def test_movement_distance_is_tracked_but_not_rewarded(self):
+    def test_movement_distance_rewards_alive_in_bounds_blue_agents(self):
         previous_obs = make_obs(
             blue_health=(1.0, 1.0, 0.0, 1.0),
             blue_positions=[
@@ -125,16 +129,46 @@ class AuxiliaryRewardsTest(unittest.TestCase):
 
         expected = np.array(
             [
-                base_step_reward(blue_alive=3, red_alive=4),
+                base_step_reward(blue_alive=3, red_alive=4) + movement_step_reward(5.0),
                 base_step_reward(blue_alive=3, red_alive=4),
                 0.0,
-                base_step_reward(blue_alive=3, red_alive=4),
+                base_step_reward(blue_alive=3, red_alive=4) + movement_step_reward(6.0),
             ],
             dtype=np.float32,
         )
         np.testing.assert_allclose(rewards, expected, atol=1e-8)
-        self.assertAlmostEqual(info["movement_reward"], 0.0)
+        self.assertAlmostEqual(
+            info["movement_reward"],
+            movement_step_reward(5.0) + movement_step_reward(6.0),
+        )
         self.assertAlmostEqual(info["mean_movement_distance"], (5.0 + 0.0 + 6.0) / 3.0)
+
+    def test_movement_reward_skips_current_out_of_bounds_blue_agents(self):
+        previous_obs = make_obs()
+        current_obs = make_obs(
+            blue_positions=[
+                [3.0, 4.0],
+                [6.0, 8.0],
+                [0.0, 0.0],
+                [0.0, 0.0],
+            ],
+            blue_out_of_bounds_time=(0.25, 0.0, 0.0, 0.0),
+        )
+
+        rewards, info = auxiliary_agent_rewards(current_obs, previous_obs=previous_obs)
+
+        expected = np.array(
+            [
+                0.0,
+                AUX_SURVIVAL_REWARD_PER_STEP + movement_step_reward(10.0),
+                AUX_SURVIVAL_REWARD_PER_STEP,
+                AUX_SURVIVAL_REWARD_PER_STEP,
+            ],
+            dtype=np.float32,
+        )
+        np.testing.assert_allclose(rewards, expected, atol=1e-8)
+        self.assertAlmostEqual(info["movement_reward"], movement_step_reward(10.0))
+        self.assertAlmostEqual(info["mean_movement_distance"], (5.0 + 10.0 + 0.0 + 0.0) / 4.0)
 
     def test_blue_hit_event_rewards_shooter_only(self):
         rewards, info = auxiliary_agent_rewards(make_obs(hit_events=[[2, 0, 4, 1]]))

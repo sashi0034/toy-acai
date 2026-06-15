@@ -13,7 +13,6 @@ from toy_acai_rl.env import (  # noqa: E402
     AUX_ALIVE_ADVANTAGE_REWARD_PER_STEP,
     AUX_DEATH_PENALTY,
     AUX_KILL_REWARD,
-    AUX_MOVEMENT_REWARD_PER_DISTANCE,
     AUX_SURVIVAL_REWARD_PER_STEP,
     TEAM_LEARN,
     TEAM_RULE,
@@ -70,7 +69,7 @@ class AuxiliaryRewardsTest(unittest.TestCase):
         self.assertAlmostEqual(info["advantage_reward"], 2 * (alive_reward - AUX_SURVIVAL_REWARD_PER_STEP))
         self.assertEqual(info["blue_kills"], 0.0)
 
-    def test_movement_distance_adds_tiny_reward_to_alive_agents(self):
+    def test_movement_distance_is_tracked_but_not_rewarded(self):
         previous_obs = make_obs(
             blue_health=(1.0, 1.0, 0.0, 1.0),
             blue_positions=[
@@ -92,23 +91,17 @@ class AuxiliaryRewardsTest(unittest.TestCase):
 
         rewards, info = auxiliary_agent_rewards(current_obs, previous_obs=previous_obs)
 
-        reward_distance = np.hypot(1600.0, 900.0)
         expected = np.array(
             [
-                base_step_reward(blue_alive=3, red_alive=4)
-                + (5.0 / reward_distance) * AUX_MOVEMENT_REWARD_PER_DISTANCE,
+                base_step_reward(blue_alive=3, red_alive=4),
                 base_step_reward(blue_alive=3, red_alive=4),
                 0.0,
-                base_step_reward(blue_alive=3, red_alive=4)
-                + (6.0 / reward_distance) * AUX_MOVEMENT_REWARD_PER_DISTANCE,
+                base_step_reward(blue_alive=3, red_alive=4),
             ],
             dtype=np.float32,
         )
         np.testing.assert_allclose(rewards, expected, atol=1e-8)
-        self.assertAlmostEqual(
-            info["movement_reward"],
-            ((5.0 + 6.0) / reward_distance) * AUX_MOVEMENT_REWARD_PER_DISTANCE,
-        )
+        self.assertAlmostEqual(info["movement_reward"], 0.0)
         self.assertAlmostEqual(info["mean_movement_distance"], (5.0 + 0.0 + 6.0) / 3.0)
 
     def test_blue_hit_event_rewards_shooter_only(self):

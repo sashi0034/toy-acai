@@ -361,9 +361,10 @@ def auxiliary_agent_rewards(
         clipped_movement = np.clip(movement_distance / reward_distance, 0.0, 1.0)
         movement_rewards = clipped_movement * float(movement_reward_per_distance)
         movement_rewards[~movement_eligible] = 0.0
-        # ノロノロ対策として、実際に移動した距離をごく小さく加点する。
-        rewards += movement_rewards.astype(np.float32)
-        movement_reward = float(np.sum(movement_rewards))
+        # ノロノロ対策として、実際に移動した距離をごく小さく加点していた。
+        # 一旦、移動距離は報酬に入れない。
+        # rewards += movement_rewards.astype(np.float32)
+        # movement_reward = float(np.sum(movement_rewards))
         if np.any(movement_eligible):
             mean_movement_distance = float(np.mean(movement_distance[movement_eligible]))
 

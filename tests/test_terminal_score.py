@@ -44,6 +44,18 @@ class TerminalScoreTest(unittest.TestCase):
         fewer_blue = self.score(blue_alive=1, red_alive=2)
         self.assertGreater(more_blue, fewer_blue)
 
+    def test_asymmetric_team_sizes_use_each_team_alive_ratio(self):
+        score = terminal_score(
+            blue_alive=1,
+            red_alive=4,
+            episode_steps=50,
+            max_steps=100,
+            team_size=1,
+            opponent_team_size=4,
+        )
+
+        self.assertAlmostEqual(score, -2.0 + 0.2)
+
 
 if __name__ == "__main__":
     unittest.main()

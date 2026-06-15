@@ -17,8 +17,8 @@ RENDER_INTERVAL = 0.1
 AUX_KILL_REWARD = 1.0
 AUX_DEATH_PENALTY = 1.0
 AUX_ALIVE_ADVANTAGE_REWARD_PER_STEP = 0.002
-AUX_SURVIVAL_REWARD_PER_STEP = 0.0010
-AUX_MOVEMENT_REWARD_PER_DISTANCE = 0.10
+AUX_SURVIVAL_REWARD_PER_STEP = 0.0015
+# AUX_MOVEMENT_REWARD_PER_DISTANCE = 0.10
 
 
 def add_default_module_paths(
@@ -47,6 +47,17 @@ def _angle_delta(target: float, current: float) -> float:
 
 def _alive(fighters: np.ndarray) -> np.ndarray:
     return fighters[:, 6] > 0.0
+
+
+def _team_indices(
+    fighters: np.ndarray,
+    team_id: int,
+    active_count: Optional[int] = None,
+) -> np.ndarray:
+    indices = np.where(fighters[:, 0] == team_id)[0]
+    if active_count is None:
+        return indices
+    return indices[: max(0, int(active_count))]
 
 
 class RuleBasedOpponent:
@@ -153,7 +164,9 @@ def _boundary_ray_features(
 
 
 def build_agent_observations(
-    obs: Dict[str, np.ndarray], learner_team: int = TEAM_LEARN
+    obs: Dict[str, np.ndarray],
+    learner_team: int = TEAM_LEARN,
+    active_learner_count: Optional[int] = None,
 ) -> np.ndarray:
     # シミュレータの生の状態(dict)を、ニューラルネットへ入れられる固定長ベクトルへ変換する。
     # 座標は自機基準の forward/right 成分に分け、マップサイズで割ってスケールをそろえる。
@@ -163,7 +176,7 @@ def build_agent_observations(
     field_h = float(obs["battlefield"][3])
     diag = max(math.hypot(field_w, field_h), 1e-6)
 
-    agent_indices = np.where(fighters[:, 0] == learner_team)[0]
+    agent_indices = _team_indices(fighters, learner_team, active_learner_count)
     all_obs = []
     for agent_idx in agent_indices:
         # ここから 1 機ぶんの観測を作る。
@@ -294,12 +307,14 @@ def terminal_score(
     episode_steps: int,
     max_steps: int,
     team_size: int,
+    opponent_team_size: Optional[int] = None,
 ) -> float:
     # エピソード終了時の大きな報酬。
     # 勝敗を強く教え、勝った場合は味方生存数と早さを少しだけ加点する。
     team_size = max(1, int(team_size))
+    opponent_team_size = max(1, int(opponent_team_size or team_size))
     blue_alive_ratio = float(blue_alive) / team_size
-    red_alive_ratio = float(red_alive) / team_size
+    red_alive_ratio = float(red_alive) / opponent_team_size
     if red_alive == 0:
         time_bonus = 0.0
         if max_steps > 0:
@@ -317,7 +332,9 @@ def auxiliary_agent_rewards(
     death_penalty: float = AUX_DEATH_PENALTY,
     alive_advantage_reward_per_step: float = AUX_ALIVE_ADVANTAGE_REWARD_PER_STEP,
     survival_reward_per_step: float = AUX_SURVIVAL_REWARD_PER_STEP,
-    movement_reward_per_distance: float = AUX_MOVEMENT_REWARD_PER_DISTANCE,
+    # movement_reward_per_distance: float = AUX_MOVEMENT_REWARD_PER_DISTANCE,
+    learner_count: Optional[int] = None,
+    opponent_count: Optional[int] = None,
 ) -> Tuple[np.ndarray, Dict[str, float]]:
     # 毎ステップ与える補助報酬。終端報酬だけだと「何が良かったか」が遠すぎるため、
     # 生存・撃墜・損失を小さな手がかりとして追加して学習を助ける。
@@ -329,7 +346,7 @@ def auxiliary_agent_rewards(
     if hit_events.ndim == 1:
         hit_events = hit_events.reshape((-1, 4))
 
-    learner_indices = np.where(fighters[:, 0] == learner_team)[0]
+    learner_indices = _team_indices(fighters, learner_team, learner_count)
     rewards = np.zeros((len(learner_indices),), dtype=np.float32)
 
     alive = fighters[learner_indices, 6] > 0.0
@@ -337,9 +354,15 @@ def auxiliary_agent_rewards(
     rewards[alive] += float(survival_reward_per_step)
     survival_reward = float(np.sum(alive) * survival_reward_per_step)
     team_size = max(1, len(learner_indices))
-    blue_alive = int(np.sum((fighters[:, 0] == learner_team) & (fighters[:, 6] > 0.0)))
+    opponent_size = max(
+        1,
+        int(opponent_count)
+        if opponent_count is not None
+        else int(np.sum(fighters[:, 0] == opponent_team)),
+    )
+    blue_alive = int(np.sum(fighters[learner_indices, 6] > 0.0))
     red_alive = int(np.sum((fighters[:, 0] == opponent_team) & (fighters[:, 6] > 0.0)))
-    alive_advantage = (blue_alive - red_alive) / float(team_size)
+    alive_advantage = (blue_alive / float(team_size)) - (red_alive / float(opponent_size))
     per_alive_advantage_reward = float(alive_advantage_reward_per_step) * alive_advantage
     # 味方が敵より多く残っている状態を少し評価する。チーム全体の形勢を伝える報酬。
     rewards[alive] += per_alive_advantage_reward
@@ -349,20 +372,20 @@ def auxiliary_agent_rewards(
     mean_movement_distance = 0.0
     if previous_obs is not None:
         previous_fighters = np.asarray(previous_obs["fighters"], dtype=np.float64)
-        field_w = float(obs["battlefield"][2])
-        field_h = float(obs["battlefield"][3])
-        reward_distance = max(math.hypot(field_w, field_h), 1e-6)
         previous_alive = previous_fighters[learner_indices, 6] > 0.0
         movement_eligible = alive & previous_alive
         movement_distance = np.linalg.norm(
             fighters[learner_indices, 2:4] - previous_fighters[learner_indices, 2:4],
             axis=1,
         )
-        clipped_movement = np.clip(movement_distance / reward_distance, 0.0, 1.0)
-        movement_rewards = clipped_movement * float(movement_reward_per_distance)
-        movement_rewards[~movement_eligible] = 0.0
         # ノロノロ対策として、実際に移動した距離をごく小さく加点していた。
         # 一旦、移動距離は報酬に入れない。
+        # field_w = float(obs["battlefield"][2])
+        # field_h = float(obs["battlefield"][3])
+        # reward_distance = max(math.hypot(field_w, field_h), 1e-6)
+        # clipped_movement = np.clip(movement_distance / reward_distance, 0.0, 1.0)
+        # movement_rewards = clipped_movement * 0.10
+        # movement_rewards[~movement_eligible] = 0.0
         # rewards += movement_rewards.astype(np.float32)
         # movement_reward = float(np.sum(movement_rewards))
         if np.any(movement_eligible):
@@ -437,6 +460,7 @@ class ToyAcaiPPOEnv:
         module_dir: Optional[Path] = None,
         render_interval: float = RENDER_INTERVAL,
         random_start_steps: int = 0,
+        learner_count: Optional[int] = None,
         rng: Optional[object] = None,
     ):
         self.core = toy_acai_core
@@ -447,9 +471,16 @@ class ToyAcaiPPOEnv:
         self.module_dir = module_dir
         self.render_interval = render_interval
         self.random_start_steps = random_start_steps
+        self.learner_count = self._clamp_learner_count(learner_count)
         self.rng = rng if rng is not None else np.random.default_rng()
         self.env = self._make_env()
         self.last_obs = None
+
+    def _clamp_learner_count(self, learner_count: Optional[int]) -> int:
+        team_count = int(self.core.TEAM_FIGHTER_COUNT)
+        if learner_count is None:
+            return team_count
+        return int(np.clip(int(learner_count), 1, team_count))
 
     def _make_env(self):
         # render=True のときだけ Siv3D の描画リソース設定を有効にする。
@@ -461,6 +492,7 @@ class ToyAcaiPPOEnv:
             "render_width": int(1920 * 0.3),
             "render_height": int(1080 * 0.3),
             "render_interval": self.render_interval,
+            "active_blue_count": self.learner_count,
         }
         return self.core.BattlefieldEnv(**env_kwargs)
 
@@ -469,7 +501,10 @@ class ToyAcaiPPOEnv:
         self.step_count = 0
         self.last_obs = self.env.reset()
         self._apply_random_start()
-        return build_agent_observations(self.last_obs)
+        return build_agent_observations(
+            self.last_obs,
+            active_learner_count=self.learner_count,
+        )
 
     def _apply_random_start(self) -> None:
         # 毎回まったく同じ初期配置から始めると過学習しやすい。
@@ -487,9 +522,11 @@ class ToyAcaiPPOEnv:
         # まず赤チームのルールベース行動を全機ぶん作り、
         # そこへ学習対象である青チームの行動を上書きする。
         actions = self.opponent.actions(self.last_obs, self.core.FIGHTER_COUNT)
-        learner_indices = np.where(
-            np.asarray(self.last_obs["fighters"])[:, 0] == TEAM_LEARN
-        )[0]
+        learner_indices = _team_indices(
+            np.asarray(self.last_obs["fighters"]),
+            TEAM_LEARN,
+            self.learner_count,
+        )
         applied_learner_actions = np.asarray(learner_actions, dtype=np.float64)
         for row, fighter_idx in enumerate(learner_indices):
             if row >= len(applied_learner_actions):
@@ -501,7 +538,7 @@ class ToyAcaiPPOEnv:
 
         # 終了条件は「どちらかが全滅」または「最大ステップ到達」。
         fighters = np.asarray(next_obs["fighters"], dtype=np.float64)
-        blue_alive = self._team_alive(fighters, TEAM_LEARN)
+        blue_alive = self._team_alive(fighters, TEAM_LEARN, self.learner_count)
         red_alive = self._team_alive(fighters, TEAM_RULE)
         done = bool(
             blue_alive == 0
@@ -511,6 +548,8 @@ class ToyAcaiPPOEnv:
         agent_rewards, auxiliary_info = auxiliary_agent_rewards(
             next_obs,
             previous_obs=self.last_obs,
+            learner_count=self.learner_count,
+            opponent_count=int(self.core.TEAM_FIGHTER_COUNT),
         )
         info = {
             "blue_alive": float(blue_alive),
@@ -525,7 +564,8 @@ class ToyAcaiPPOEnv:
                 red_alive=red_alive,
                 episode_steps=self.step_count,
                 max_steps=self.max_steps,
-                team_size=int(self.core.TEAM_FIGHTER_COUNT),
+                team_size=self.learner_count,
+                opponent_team_size=int(self.core.TEAM_FIGHTER_COUNT),
             )
             agent_rewards += score
             info["terminal_score"] = score
@@ -537,7 +577,10 @@ class ToyAcaiPPOEnv:
         self.last_obs = next_obs
         info["reward_mean"] = float(np.mean(agent_rewards))
         return StepResult(
-            build_agent_observations(next_obs),
+            build_agent_observations(
+                next_obs,
+                active_learner_count=self.learner_count,
+            ),
             agent_rewards.astype(np.float32),
             done,
             info,
@@ -549,5 +592,10 @@ class ToyAcaiPPOEnv:
         return self.env.take_render_frame()
 
     @staticmethod
-    def _team_alive(fighters: np.ndarray, team_id: int) -> int:
-        return int(np.sum((fighters[:, 0] == team_id) & (fighters[:, 6] > 0.0)))
+    def _team_alive(
+        fighters: np.ndarray,
+        team_id: int,
+        active_count: Optional[int] = None,
+    ) -> int:
+        team_indices = _team_indices(fighters, team_id, active_count)
+        return int(np.sum(fighters[team_indices, 6] > 0.0))

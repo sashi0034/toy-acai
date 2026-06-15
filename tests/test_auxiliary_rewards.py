@@ -69,6 +69,16 @@ class AuxiliaryRewardsTest(unittest.TestCase):
         self.assertAlmostEqual(info["advantage_reward"], 2 * (alive_reward - AUX_SURVIVAL_REWARD_PER_STEP))
         self.assertEqual(info["blue_kills"], 0.0)
 
+    def test_learner_count_limits_rewarded_blue_agents(self):
+        rewards, info = auxiliary_agent_rewards(make_obs(), learner_count=1, opponent_count=4)
+
+        np.testing.assert_allclose(
+            rewards,
+            np.array([AUX_SURVIVAL_REWARD_PER_STEP], dtype=np.float32),
+        )
+        self.assertAlmostEqual(info["survival_reward"], AUX_SURVIVAL_REWARD_PER_STEP)
+        self.assertAlmostEqual(info["advantage_reward"], 0.0)
+
     def test_movement_distance_is_tracked_but_not_rewarded(self):
         previous_obs = make_obs(
             blue_health=(1.0, 1.0, 0.0, 1.0),
@@ -210,7 +220,7 @@ class FakeOpponent:
         return np.zeros((fighter_count, 3), dtype=np.float64)
 
 
-def fake_build_agent_observations(_obs):
+def fake_build_agent_observations(_obs, **_kwargs):
     return np.zeros((4, 1), dtype=np.float32)
 
 

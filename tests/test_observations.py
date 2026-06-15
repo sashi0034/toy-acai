@@ -57,6 +57,11 @@ def make_obs(fighters=None, missiles=None):
 
 
 class ObservationFeaturesTest(unittest.TestCase):
+    def test_active_learner_count_limits_observation_rows(self):
+        obs = build_agent_observations(make_obs(), active_learner_count=1)
+
+        self.assertEqual(obs.shape, (1, EXPECTED_OBS_DIM))
+
     def test_boundary_rays_are_front_left_and_right_relative_to_ownship_heading(self):
         fighters = np.zeros((8, 9), dtype=np.float64)
         fighters[:4, 0] = TEAM_LEARN

@@ -61,6 +61,7 @@ def parse_args():
     parser.add_argument("--log-std-init", type=float, default=-0.8)
     parser.add_argument("--hidden-dim", type=int, default=None)
     parser.add_argument("--random-start-steps", type=int, default=120)
+    parser.add_argument("--learner-count", type=int, default=int(os.environ.get("TOY_ACAI_LEARNER_COUNT", "1")))
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--resume-checkpoint", type=Path, default=None)
     return parser.parse_args()
@@ -201,6 +202,7 @@ def evaluate(toy_acai_core, trainer: PPOTrainer, args, episode: int, repo_root: 
         render=True,
         module_dir=module_dir,
         random_start_steps=args.random_start_steps,
+        learner_count=args.learner_count,
         rng=np.random.default_rng(args.seed + episode),
     )
     value_gif = ValueGifRecorder(gif_path, render_interval=env.render_interval)
@@ -266,7 +268,8 @@ def main():
         log_std_init=args.log_std_init,
         hidden_dim=hidden_dim,
     )
-    agent_count = int(toy_acai_core.TEAM_FIGHTER_COUNT)
+    agent_count = int(np.clip(args.learner_count, 1, int(toy_acai_core.TEAM_FIGHTER_COUNT)))
+    args.learner_count = agent_count
     trainer = PPOTrainer(
         obs_dim,
         config,
@@ -292,6 +295,7 @@ def main():
         toy_acai_core,
         max_steps=args.steps,
         random_start_steps=args.random_start_steps,
+        learner_count=args.learner_count,
         rng=np.random.default_rng(args.seed),
     )
     latest_observations = train_env.reset()
@@ -324,7 +328,7 @@ def main():
             write_jsonl(args.out_dir / "update_metrics.jsonl", {"episode": episode, **update_stats})
 
         if args.checkpoint_every > 0 and episode % args.checkpoint_every == 0:
-            checkpoint_extra = {"episode": episode, "obs_dim": obs_dim}
+            checkpoint_extra = {"episode": episode, "obs_dim": obs_dim, "learner_count": agent_count}
             trainer.save(args.out_dir / "checkpoints" / f"ppo_{episode:06d}.pt", checkpoint_extra)
             trainer.save(args.out_dir / "checkpoints" / "ppo_latest.pt", checkpoint_extra)
 

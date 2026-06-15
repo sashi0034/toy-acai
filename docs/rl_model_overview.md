@@ -1,7 +1,7 @@
 # Python 強化学習モデル概要
 
 このドキュメントは、`sim/` 以下で実装している toy-acai の強化学習モデルの概要です。
-現在の Python 学習コードは、C++ シミュレータ `toy_acai_core` を Python から呼び出し、Blue チーム 4 機を PPO で学習させます。Red チームは固定のルールベース AI です。
+現在の Python 学習コードは、C++ シミュレータ `toy_acai_core` を Python から呼び出し、Blue チームを PPO で学習させます。Red チームは固定のルールベース AI です。
 
 主な実装ファイルは次の通りです。
 
@@ -16,7 +16,7 @@
 
 1. `ToyAcaiPPOEnv.reset()` で C++ シミュレータを初期化する。
 2. C++ の生状態 `fighters` / `missiles` / `hit_events` を、`build_agent_observations()` でニューラルネット入力用の固定長ベクトルに変換する。
-3. `PPOTrainer.act()` が Blue 4 機それぞれの行動を出す。
+3. `PPOTrainer.act()` が学習対象の Blue 機それぞれの行動を出す。
 4. Red 4 機は `RuleBasedOpponent` が最近傍の生存 Blue 機へ向かって旋回・射撃する。
 5. `ToyAcaiPPOEnv.step()` が Blue の行動と Red の行動をまとめて C++ シミュレータへ渡す。
 6. 次状態、各 Blue 機の報酬、終了判定を受け取る。
@@ -106,7 +106,8 @@ C++ 側では `acceleration` と `turn` は `[-1, 1]` に clamp され、`fire` 
 ## 観測入力
 
 ニューラルネットへの入力は、`build_agent_observations()` が作る固定長ベクトルです。
-Blue 4 機それぞれについて 1 本ずつ作るので、出力形状は `[4, obs_dim]` になります。
+学習対象の Blue 機それぞれについて 1 本ずつ作るので、出力形状は `[learner_count, obs_dim]` になります。
+現在の学習スクリプト既定では `learner_count=1` です。C++ シミュレータの最大 Blue 機数は 4 のままで、実験用に先頭 1 機だけを有効化しています。
 
 現在の標準構成では 1 機あたりの観測次元は次の計算です。
 
@@ -214,13 +215,11 @@ checkpoint 再開時は、保存済み checkpoint の `hidden_dim` を優先し�
 
 ## 個別方策
 
-Blue 4 機はそれぞれ別々の Actor-Critic モデルを持ちます。
+学習対象の Blue 機はそれぞれ別々の Actor-Critic モデルを持ちます。
 
 ```text
 Blue 0 observation -> ActorCritic 0 -> Blue 0 action
-Blue 1 observation -> ActorCritic 1 -> Blue 1 action
-Blue 2 observation -> ActorCritic 2 -> Blue 2 action
-Blue 3 observation -> ActorCritic 3 -> Blue 3 action
+...
 ```
 
 rollout buffer も機体ごとに分かれており、PPO 更新時は各モデルを自分の経験で更新します。
@@ -264,7 +263,7 @@ Blue の生存数も少し見ますが、優先度は Red の残数のほうが�
 | 項目 | デフォルト | 内容 |
 | --- | ---: | --- |
 | 生存報酬 | `0.0003` / step | 生きている Blue 機に加点 |
-| 戦力差報酬 | `0.002 * (blue_alive - red_alive) / team_size` / step | 生存数で優勢なら加点、劣勢なら減点 |
+| 戦力差報酬 | `0.002 * (blue_alive_ratio - red_alive_ratio)` / step | 生存率で優勢なら加点、劣勢なら減点 |
 | 撃墜報酬 | `1.0` | Red を撃墜した Blue 機本人へ加点 |
 | 自機損失ペナルティ | `-1.0` | 前 step 生存、今 step 非生存になった Blue 本人へ減点 |
 
@@ -386,7 +385,7 @@ loss = policy_loss + value_coef * value_loss - entropy_coef * entropy
 - 位置関係は自機基準の距離・方位で表すため、操縦判断に直結しやすい。
 - 角度は `cos` / `sin` で表すため、角度境界の不連続を避けている。
 - ミサイルは近い順に最大 8 発だけ見るため、危険度の高い対象に集中しやすい。
-- Blue 4 機は個別方策を持つため、機体ごとの役割分担を学べる余地がある。
+- 学習対象機は個別方策を持つため、複数機に戻した場合は機体ごとの役割分担を学べる余地がある。
 - 勝敗を終端スコアで強く教えつつ、補助報酬で中間的な行動改善を促している。
 
 ## 注意点

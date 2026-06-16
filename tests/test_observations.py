@@ -52,7 +52,7 @@ def make_obs(fighters=None, missiles=None):
         fighters[4:, 5] = MAX_SPEED * 0.25
         fighters[4:, 6] = 1.0
     if missiles is None:
-        missiles = np.zeros((0, 8), dtype=np.float64)
+        missiles = np.zeros((0, 9), dtype=np.float64)
     return {
         "fighters": np.asarray(fighters, dtype=np.float64),
         "missiles": np.asarray(missiles, dtype=np.float64),
@@ -175,8 +175,8 @@ class ObservationFeaturesTest(unittest.TestCase):
 
         missiles = np.array(
             [
-                [51.0, 50.0, 0.0, MAX_SPEED, 0.5, 0.0, TEAM_LEARN, 4],
-                [60.0, 70.0, -math.pi / 2.0, MAX_SPEED * 0.5, 1.5, 0.2, TEAM_RULE, 0],
+                [51.0, 50.0, 0.0, MAX_SPEED, 0.5, 0.0, TEAM_LEARN, 4, 1001],
+                [60.0, 70.0, -math.pi / 2.0, MAX_SPEED * 0.5, 1.5, 0.2, TEAM_RULE, 0, 1002],
             ],
             dtype=np.float64,
         )

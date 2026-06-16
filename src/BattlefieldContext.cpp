@@ -104,6 +104,7 @@ namespace
             shooter.teamId,
             shooterIndex,
             targetIndex,
+            context.nextMissileId++,
         });
 
         constexpr double cooldown = 3.5;
@@ -242,6 +243,7 @@ namespace toy_acai
         context.battlefieldArea = RectF{Arg::center = context.screenSize * 0.5f, Vec2{1600, 900}};
         context.missiles.clear();
         context.hitEvents.clear();
+        context.nextMissileId = 0;
 
         for (int team = 0; team < TeamCount; ++team)
         {

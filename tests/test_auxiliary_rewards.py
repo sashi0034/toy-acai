@@ -48,7 +48,7 @@ def make_obs(
     if hit_events is None:
         hit_events = np.zeros((0, 4), dtype=np.float64)
     if missiles is None:
-        missiles = np.zeros((0, 8), dtype=np.float64)
+        missiles = np.zeros((0, 9), dtype=np.float64)
     return {
         "fighters": fighters,
         "missiles": np.asarray(missiles, dtype=np.float64),
@@ -59,6 +59,31 @@ def make_obs(
 
 def movement_step_reward(distance):
     return np.clip(distance / np.hypot(1600.0, 900.0), 0.0, 1.0) * 0.10
+
+
+def missile_row(
+    *,
+    x=100.0,
+    y=0.0,
+    yaw=0.0,
+    speed=240.0,
+    age=0.5,
+    lock_lost_time=0.0,
+    team=TEAM_RULE,
+    target=0.0,
+    missile_id=1.0,
+):
+    return [
+        x,
+        y,
+        yaw,
+        speed,
+        age,
+        lock_lost_time,
+        float(team),
+        float(target),
+        float(missile_id),
+    ]
 
 
 class AuxiliaryRewardsTest(unittest.TestCase):
@@ -220,7 +245,7 @@ class AuxiliaryRewardsTest(unittest.TestCase):
     def test_self_tracking_missile_disappearing_while_receding_rewards_target(self):
         # 自機(blue 0, 原点)から離れる方向(yaw=0, +x へ進む)のミサイルが、
         # 次ステップで消えた場合は「振り切れた」とみなして報酬を与える。
-        prev_missile = [100.0, 0.0, 0.0, 240.0, 0.5, 0.0, float(TEAM_RULE), 0.0]
+        prev_missile = missile_row(missile_id=10.0)
         previous_obs = make_obs(missiles=[prev_missile])
         current_obs = make_obs(missiles=[])
 
@@ -234,7 +259,7 @@ class AuxiliaryRewardsTest(unittest.TestCase):
     def test_self_tracking_missile_disappearing_while_closing_gives_no_reward(self):
         # 自機(blue 0, 原点)に向かって(yaw=pi, -x 方向)進むミサイルが消えても、
         # まだ closing > 0 なので「lifetime 切れで運良く消えただけ」とみなして報酬を与えない。
-        prev_missile = [100.0, 0.0, np.pi, 240.0, 0.5, 0.0, float(TEAM_RULE), 0.0]
+        prev_missile = missile_row(yaw=np.pi, missile_id=11.0)
         previous_obs = make_obs(missiles=[prev_missile])
         current_obs = make_obs(missiles=[])
 
@@ -245,9 +270,9 @@ class AuxiliaryRewardsTest(unittest.TestCase):
         self.assertAlmostEqual(info["evasion_reward"], 0.0)
 
     def test_persistent_self_tracking_missile_gives_no_evasion_reward(self):
-        # 同一ミサイルが (team, target, age+dt) で前後フレームに存在する場合は消滅とみなさない。
-        prev_missile = [100.0, 0.0, 0.0, 240.0, 0.5, 0.0, float(TEAM_RULE), 0.0]
-        curr_missile = [104.0, 0.0, 0.0, 240.0, 0.55, 0.0, float(TEAM_RULE), 0.0]
+        # 同じ missileId が前後フレームに存在する場合は消滅とみなさない。
+        prev_missile = missile_row(x=100.0, age=0.5, missile_id=12.0)
+        curr_missile = missile_row(x=104.0, age=0.55, missile_id=12.0)
         previous_obs = make_obs(missiles=[prev_missile])
         current_obs = make_obs(missiles=[curr_missile])
 
@@ -257,9 +282,23 @@ class AuxiliaryRewardsTest(unittest.TestCase):
         np.testing.assert_allclose(rewards, expected, atol=1e-8)
         self.assertAlmostEqual(info["evasion_reward"], 0.0)
 
+    def test_evasion_matching_uses_missile_id_not_age(self):
+        # target と age が近くても missileId が異なるなら、前のミサイルは消滅扱いにする。
+        prev_missile = missile_row(x=100.0, age=0.5, missile_id=20.0)
+        curr_missile = missile_row(x=104.0, age=0.55, missile_id=21.0)
+        previous_obs = make_obs(missiles=[prev_missile])
+        current_obs = make_obs(missiles=[curr_missile])
+
+        rewards, info = auxiliary_agent_rewards(current_obs, previous_obs=previous_obs)
+
+        expected = np.zeros((4,), dtype=np.float32)
+        expected[0] += AUX_EVASION_REWARD
+        np.testing.assert_allclose(rewards, expected, atol=1e-8)
+        self.assertAlmostEqual(info["evasion_reward"], AUX_EVASION_REWARD)
+
     def test_friendly_missile_disappearing_does_not_trigger_evasion_reward(self):
         # 味方(TEAM_LEARN)が撃ったミサイルは「自分追跡の敵ミサイル」ではないので無視する。
-        prev_missile = [100.0, 0.0, 0.0, 240.0, 0.5, 0.0, float(TEAM_LEARN), 0.0]
+        prev_missile = missile_row(team=TEAM_LEARN, missile_id=13.0)
         previous_obs = make_obs(missiles=[prev_missile])
         current_obs = make_obs(missiles=[])
 
@@ -271,7 +310,7 @@ class AuxiliaryRewardsTest(unittest.TestCase):
 
     def test_evasion_reward_only_goes_to_targeted_fighter(self):
         # blue 1 を狙うミサイルが消えても、報酬は blue 1 だけに入る。
-        prev_missile = [100.0, 0.0, 0.0, 240.0, 0.5, 0.0, float(TEAM_RULE), 1.0]
+        prev_missile = missile_row(target=1.0, missile_id=14.0)
         previous_obs = make_obs(missiles=[prev_missile])
         current_obs = make_obs(missiles=[])
 

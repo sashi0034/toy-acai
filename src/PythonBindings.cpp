@@ -30,7 +30,7 @@ namespace
     using FrameArray = nb::ndarray<nb::numpy, std::uint8_t, nb::ndim<3>>;
 
     constexpr size_t FighterColumnCount = 9;
-    constexpr size_t MissileColumnCount = 8;
+    constexpr size_t MissileColumnCount = 9;
     constexpr size_t HitEventColumnCount = 4;
     constexpr double SimulationDeltaTime = 1.0 / 60.0;
     constexpr double DefaultRenderInterval = 0.1;
@@ -85,6 +85,7 @@ namespace
             (*values)[offset + 5] = missile.lockLostTime;
             (*values)[offset + 6] = static_cast<double>(missile.teamId);
             (*values)[offset + 7] = static_cast<double>(missile.targetFighterIndex);
+            (*values)[offset + 8] = static_cast<double>(missile.id);
         }
         return MakeMatrix(values, rows, MissileColumnCount);
     }

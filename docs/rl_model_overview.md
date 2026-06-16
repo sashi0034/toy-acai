@@ -17,7 +17,7 @@
 1. `ToyAcaiPPOEnv.reset()` で C++ シミュレータを初期化する。
 2. C++ の生状態 `fighters` / `missiles` / `hit_events` を、`build_agent_observations()` でニューラルネット入力用の固定長ベクトルに変換する。
 3. `PPOTrainer.act()` が学習対象の Blue 機それぞれの行動を出す。
-4. Red 4 機は `RuleBasedOpponent` が最近傍の生存 Blue 機へ向かって旋回・射撃する。
+4. 現在のカリキュラム段階で有効な Red 機は `RuleBasedOpponent` が最近傍の生存 Blue 機へ向かって旋回・射撃する。
 5. `ToyAcaiPPOEnv.step()` が Blue の行動と Red の行動をまとめて C++ シミュレータへ渡す。
 6. 次状態、各 Blue 機の報酬、終了判定を受け取る。
 7. 観測、行動、行動確率、報酬、価値推定を `RolloutBuffer` に蓄積する。
@@ -37,6 +37,32 @@ Red チームは `TEAM_RULE = 1` で、現在は学習せず、単純なルー�
 - 目標がいない場合や端に寄った場合は、戦場中心へ戻る向きに旋回する。
 
 つまり現状の学習は「固定ルールの Red に対して、Blue がどう動けば勝てるか」を学ぶ self-play ではない PPO です。
+
+## カリキュラム学習
+
+学習は `sim/toy_acai_rl/curriculum.py` の設定に従い、Red の有効機数を段階的に増やすカリキュラムで進みます。
+現在のステージは次の 4 段階です。
+
+```text
+Red 1 機 -> Red 2 機 -> Red 3 機 -> Red 4 機
+```
+
+Blue 側の学習対象は `CURRICULUM_LEARNER_COUNT = 1` で、通常は先頭の Blue 1 機だけを学習します。
+C++ シミュレータ上の最大機数は Blue 4 機 + Red 4 機のままですが、`ToyAcaiPPOEnv` に渡す `learner_count` / `opponent_count` で有効機数を絞ります。
+
+ステージ昇格判定は次の通りです。
+
+- `CURRICULUM_EVAL_EVERY = 200` エピソードごとに、現在ステージの Red 機数で決定論的評価を行う。
+- 評価は `CURRICULUM_PROMOTION_EVALS = 20` 回実行する。
+- `CURRICULUM_PROMOTION_WINS = 14` 勝以上なら、次のステージへ進む。
+- 勝率条件を満たさなくても、同じステージで `CURRICULUM_STAGE_MAX_EPISODES = 10000` エピソードに達したら強制的に次へ進む。
+- 最終ステージの Red 4 機では、それ以上の昇格は行わない。
+
+昇格すると rollout buffer をクリアし、学習環境を新しい `opponent_count` で作り直します。
+評価グラフ用の履歴もステージごとにリセットされます。
+
+ログには `curriculum_stage`、`stage_episode`、`opponent_count` が入り、昇格判定は `curriculum_metrics.jsonl`、昇格イベントは `curriculum_events.jsonl` に出力されます。
+checkpoint には現在の `curriculum_stage`、`opponent_count`、`stage_episode` も保存されるため、`--resume-checkpoint` で再開すると同じステージから続きます。
 
 ## シミュレータ状態
 
@@ -137,7 +163,7 @@ total               138
 
 ### 他機特徴量 7 機 x 11 次元
 
-自分以外の 7 機について、敵を先、味方を後に並べて入れます。
+自分以外の 7 機について、敵を先、味方を後にし、それぞれ生存機を距離順、撃墜済み機体を後ろに並べて入れます。
 各機の特徴量は 11 次元です。
 
 | index | 内容 |
@@ -374,6 +400,7 @@ loss = policy_loss + value_coef * value_loss - entropy_coef * entropy
 - PPO config
 - episode
 - obs_dim
+- curriculum_stage / opponent_count / stage_episode
 
 再開時は `--resume-checkpoint` を指定します。
 観測設計を変えると `obs_dim` が変わるため、古い checkpoint はそのまま読み込めません。

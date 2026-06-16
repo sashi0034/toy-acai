@@ -208,8 +208,17 @@ def build_agent_observations(
         )
 
         others = [i for i in range(len(fighters)) if i != agent_idx]
-        # 敵を先、味方を後に並べる。観測の並び順を固定すると、ネットワークが意味を覚えやすい。
-        others.sort(key=lambda i: (fighters[i, 0] == learner_team, i))
+
+        def other_sort_key(i):
+            other = fighters[i]
+            rel = other[2:4] - fighter[2:4]
+            distance = math.hypot(float(rel[0]), float(rel[1]))
+            is_friendly = int(other[0]) == learner_team
+            is_dead = float(other[6]) <= 0.0
+            return (is_friendly, is_dead, distance, i)
+
+        # 敵を先、味方を後にし、それぞれ生存機を距離順、撃墜済み機体を後ろに並べる。
+        others.sort(key=other_sort_key)
         for other_idx in others:
             other = fighters[other_idx]
             rel = other[2:4] - fighter[2:4]

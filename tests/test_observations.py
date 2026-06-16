@@ -29,6 +29,11 @@ MISSILE_START = SELF_FEATURES + OTHER_COUNT * OTHER_FEATURES
 EXPECTED_OBS_DIM = MISSILE_START + MAX_TRACKED_MISSILES * MISSILE_OBS_FEATURES
 
 
+def other_slot(obs, slot):
+    start = SELF_FEATURES + slot * OTHER_FEATURES
+    return obs[start : start + OTHER_FEATURES]
+
+
 def make_obs(fighters=None, missiles=None):
     if fighters is None:
         fighters = np.zeros((8, 9), dtype=np.float64)
@@ -99,20 +104,67 @@ class ObservationFeaturesTest(unittest.TestCase):
         fighters[0, 2:5] = [50.0, 50.0, math.pi / 2.0]
         fighters[4, 2:5] = [60.0, 70.0, math.pi / 2.0]
         fighters[4, 5] = MAX_SPEED * 0.5
-        fighters[4, 6] = 0.0
+        fighters[4, 6] = 1.0
         fighters[4, 7] = 0.0
 
         obs = build_agent_observations(make_obs(fighters=fighters))[0]
-        first_other = obs[SELF_FEATURES : SELF_FEATURES + OTHER_FEATURES]
+        first_other = other_slot(obs, 0)
 
         distance = math.hypot(10.0, 20.0)
         self.assertAlmostEqual(first_other[0], distance / DIAG, places=6)
         self.assertAlmostEqual(first_other[1], 20.0 / distance, places=6)
         self.assertAlmostEqual(first_other[2], -10.0 / distance, places=6)
-        self.assertEqual(first_other[6], 0.0)
+        self.assertEqual(first_other[6], 1.0)
         self.assertEqual(first_other[7], -1.0)
         self.assertEqual(first_other[9], 1.0)
         self.assertEqual(first_other[10], 1.0)
+
+    def test_other_fighters_are_ordered_by_team_alive_distance_and_index(self):
+        fighters = np.zeros((8, 9), dtype=np.float64)
+        fighters[:4, 0] = TEAM_LEARN
+        fighters[4:, 0] = TEAM_RULE
+        fighters[:, 6] = 1.0
+        fighters[0, 2:5] = [50.0, 50.0, 0.0]
+
+        # Same-distance live enemies use fighter index as the final stable key.
+        fighters[4, 2:6] = [60.0, 50.0, 0.0, MAX_SPEED * 0.10]
+        fighters[5, 2:6] = [40.0, 50.0, 0.0, MAX_SPEED * 0.20]
+        # A closer dead enemy must still be behind live enemies.
+        fighters[6, 2:6] = [51.0, 50.0, 0.0, MAX_SPEED * 0.30]
+        fighters[6, 6] = 0.0
+        # A friendly fighter stays behind the enemy block even when closer.
+        fighters[1, 2:6] = [49.0, 50.0, 0.0, MAX_SPEED * 0.40]
+        # Friendlies are also ordered by alive, distance, then index.
+        fighters[2, 2:6] = [70.0, 50.0, 0.0, MAX_SPEED * 0.50]
+        fighters[3, 2:6] = [52.0, 50.0, 0.0, MAX_SPEED * 0.60]
+        fighters[3, 6] = 0.0
+        # Remaining dead enemy trails live enemies but still precedes friendlies.
+        fighters[7, 2:6] = [90.0, 50.0, 0.0, MAX_SPEED * 0.70]
+        fighters[7, 6] = 0.0
+
+        obs = build_agent_observations(make_obs(fighters=fighters))[0]
+        slots = [other_slot(obs, slot) for slot in range(OTHER_COUNT)]
+
+        ordered_speed_ratios = [slot[5] for slot in slots]
+        np.testing.assert_allclose(
+            ordered_speed_ratios,
+            np.array([0.10, 0.20, 0.30, 0.70, 0.40, 0.50, 0.60], dtype=np.float32),
+            atol=1e-6,
+        )
+        np.testing.assert_allclose(
+            [slot[7] for slot in slots],
+            np.array([-1.0, -1.0, -1.0, -1.0, 1.0, 1.0, 1.0], dtype=np.float32),
+        )
+        np.testing.assert_allclose(
+            [slot[6] for slot in slots],
+            np.array([1.0, 1.0, 0.0, 0.0, 1.0, 1.0, 0.0], dtype=np.float32),
+        )
+        np.testing.assert_allclose(
+            [slot[0] for slot in slots],
+            np.array([10.0, 10.0, 1.0, 40.0, 1.0, 20.0, 2.0], dtype=np.float32)
+            / DIAG,
+            atol=1e-6,
+        )
 
     def test_missile_features_use_enemy_missiles_distance_and_bearing(self):
         fighters = np.zeros((8, 9), dtype=np.float64)

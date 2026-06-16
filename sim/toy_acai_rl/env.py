@@ -14,20 +14,13 @@ MAX_TRACKED_MISSILES = 8
 MISSILE_OBS_FEATURES = 7
 MAX_SPEED = 360.0
 RENDER_INTERVAL = 0.1
-AUX_KILL_REWARD = 1.0
-AUX_DEATH_PENALTY = 5.0
+AUX_KILL_REWARD = 10.0
+AUX_DEATH_PENALTY = 20.0
 # AUX_SURVIVAL_REWARD_PER_STEP = 0.0015 # 生存報酬は一旦無効化する。必要になったら再度有効化する。
 AUX_OUT_OF_BOUNDS_PENALTY_PER_STEP = 0.03
-# 自分を追跡していた敵ミサイルが消滅した瞬間に与える報酬。
-# ただし消滅直前に missile_closing > 0(まだ近づき続けていた)だったものは、
-# 単に lifetime 切れで運良く消えただけのケースとして除外する。
 AUX_EVASION_REWARD = 1.0
-# ミサイル age を使ってフレーム間で同一ミサイルを照合するときの許容誤差(秒)。
-# age は deltaTime ずつ単調増加するため、age_curr ≈ age_prev + dt の差分が
-# このしきい値以内なら同一ミサイルとみなす。
 MISSILE_AGE_MATCH_TOLERANCE = 0.05
 AUX_MISSILE_FIRE_REWARD = 0.03
-# AUX_MOVEMENT_REWARD_PER_DISTANCE = 0.10
 
 
 def add_default_module_paths(

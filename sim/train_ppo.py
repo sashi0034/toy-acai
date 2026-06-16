@@ -48,6 +48,51 @@ EPISODE_INFO_METRICS = (
     "hit_events",
 )
 
+# auxiliary_agent_rewards が step ごとに返す「その step だけの増分」を、
+# エピソード単位の累計に置き換えたいキー。
+# 最終 step の値だけを残すと、終了直前にたまたま発生していなかった成分は
+# 0 として記録されてしまい「ミサイル回避報酬が動いていない」ように見えてしまう。
+EPISODE_CUMULATIVE_INFO_KEYS = (
+    "survival_reward",
+    "out_of_bounds_penalty",
+    "evasion_reward",
+    "movement_reward",
+    "missile_fire_reward",
+    "kill_reward",
+    "death_penalty",
+    "blue_kills",
+    "blue_losses",
+    "hit_events",
+)
+
+
+class EpisodeInfoAggregator:
+    """1 エピソード分の補助報酬・カウンタを step ごとに集計するヘルパー。"""
+
+    def __init__(self):
+        self._totals = {key: 0.0 for key in EPISODE_CUMULATIVE_INFO_KEYS}
+        self._mean_movement_sum = 0.0
+        self._mean_movement_steps = 0
+
+    def add(self, info: dict) -> None:
+        for key in EPISODE_CUMULATIVE_INFO_KEYS:
+            self._totals[key] += float(info.get(key, 0.0))
+        self._mean_movement_sum += float(info.get("mean_movement_distance", 0.0))
+        self._mean_movement_steps += 1
+
+    def apply(self, info: dict) -> dict:
+        # 最終 step の info(終端スコアや勝敗のように「最後の値」が欲しいキー)を
+        # ベースに、累積したいキーだけ上書きする。
+        merged = dict(info)
+        merged.update(self._totals)
+        if self._mean_movement_steps > 0:
+            merged["mean_movement_distance"] = (
+                self._mean_movement_sum / self._mean_movement_steps
+            )
+        else:
+            merged["mean_movement_distance"] = 0.0
+        return merged
+
 
 def parse_args():
     # 学習条件はコマンドライン引数で変えられるようにしておく。
@@ -359,6 +404,7 @@ def run_episode(
     abs_turn_sum = 0.0
     fire_sum = 0.0
     episode_steps = 0
+    aggregator = EpisodeInfoAggregator()
     for _ in range(env.max_steps):
         # trainer.act は各味方機の観測から行動を決める。
         # raw_actions は PPO の確率計算用、env_actions は環境へ渡せる範囲に整形済みの行動。
@@ -379,10 +425,14 @@ def run_episode(
             buffer.add(observations, raw_actions, log_probs, result.rewards, result.done, values)
         total_reward += float(np.mean(result.rewards))
         observations = result.observations
+        # info 内の補助報酬は step 毎の増分なので、最後の step だけ残すと
+        # ほぼ常に 0 に見えてしまう。ここでエピソード全体の累計を別に持つ。
+        aggregator.add(result.info)
         final_info = result.info
         episode_steps += 1
         if result.done:
             break
+    final_info = aggregator.apply(final_info)
     if action_count > 0:
         final_info["mean_accel"] = accel_sum / action_count
         final_info["mean_turn"] = turn_sum / action_count

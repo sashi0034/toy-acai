@@ -196,6 +196,68 @@ class SlackUploaderTest(unittest.TestCase):
                 [("xoxb-token", "C123", chart_path, "reward trend", "1710000000.000100")],
             )
 
+    def test_process_all_once_uploads_records_from_multiple_run_spools(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            spools = []
+            for index, thread_ts in enumerate(["1710000000.000100", "1710000000.000200"], start=1):
+                spool = root / f"run_20260616_00000{index}" / "slack"
+                pending = spool / "pending"
+                pending.mkdir(parents=True)
+                (spool / "thread_ts").write_text(f"{thread_ts}\n", encoding="utf-8")
+                gif_path = root / f"episode_{index}.gif"
+                gif_path.write_bytes(b"gif")
+                (pending / f"episode_{index}.json").write_text(
+                    json.dumps({"gif_path": str(gif_path), "comment": f"episode {index}"}),
+                    encoding="utf-8",
+                )
+                spools.append(spool)
+
+            uploads = []
+            original_upload_file = slack_uploader.upload_file
+            slack_uploader.upload_file = (
+                lambda token, channel_id, file_path, initial_comment="", thread_ts=None: uploads.append(
+                    (token, channel_id, file_path.name, initial_comment, thread_ts)
+                )
+                or "FGIF"
+            )
+            try:
+                with contextlib.redirect_stdout(io.StringIO()):
+                    processed = slack_uploader.process_all_once(
+                        spools,
+                        "xoxb-token",
+                        "C123",
+                        {},
+                        dry_run=False,
+                    )
+            finally:
+                slack_uploader.upload_file = original_upload_file
+
+            self.assertEqual(processed, 2)
+            self.assertEqual(
+                uploads,
+                [
+                    ("xoxb-token", "C123", "episode_1.gif", "episode 1", "1710000000.000100"),
+                    ("xoxb-token", "C123", "episode_2.gif", "episode 2", "1710000000.000200"),
+                ],
+            )
+            self.assertTrue((spools[0] / "sent" / "episode_1.json").exists())
+            self.assertTrue((spools[1] / "sent" / "episode_2.json").exists())
+
+    def test_discover_spools_lists_run_dirs_without_latest_symlink(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            first = root / "run_20260616_000001"
+            second = root / "run_20260616_000002"
+            (first / "slack").mkdir(parents=True)
+            (second / "slack").mkdir(parents=True)
+            (root / "latest").symlink_to(second.name)
+
+            self.assertEqual(
+                slack_uploader.discover_spools(root),
+                [first / "slack", second / "slack"],
+            )
+
     def test_file_share_ts_retries_until_slack_share_is_visible(self):
         responses = [
             {"file": {"shares": {}}},

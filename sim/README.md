@@ -49,7 +49,8 @@ BUILD_PARALLELISM=1 ./linux-python/build-apptainer.sh
 
 学習を実行するたびに、`TOY_ACAI_OUTPUT_DIR` (既定では `outputs/rl`) の下に `run_<timestamp>` ディレクトリが新規作成されます。
 checkpoint や metrics、GIF はその run 専用ディレクトリに書き込まれるため、過去の結果が上書きされることはありません。
-最新の run ディレクトリには `outputs/rl/latest` という symlink が貼られ、slack uploader などの後段プロセスはこちらを参照します。
+最新の run ディレクトリには `outputs/rl/latest` という symlink が貼られます。
+Slack uploader は既定で `outputs/rl/run_*/slack` を巡回するため、複数の学習 run を同時に動かしても各 run の投稿候補を拾えます。
 
 チェックポイントから続ける場合は、例えば次のようにします:
 
@@ -75,8 +76,8 @@ Slack 投稿が多すぎる場合は、まず `TOY_ACAI_RENDER_EVERY` を大き�
 
 生成済み GIF の数自体を減らしたい場合は `TOY_ACAI_RENDER_EVERY` を変更してください。
 
-学習中に作られた GIF は `outputs/rl/latest/slack/pending/*.json` として Slack 送信用にスプールされます。
-学習開始時に uploader が `docs/rl_model_overview.md` を添付した Slack 親メッセージを投稿し、以降の GIF 投稿はそのメッセージのスレッドにまとまります。
+学習中に作られた GIF は各 run の `slack/pending/*.json` として Slack 送信用にスプールされます。
+学習開始時に uploader が run ごとに `docs/rl_model_overview.md` を添付した Slack 親メッセージを投稿し、以降の GIF 投稿はその run のスレッドにまとまります。
 GIF 投稿 10 件ごとに、横軸 episode、縦軸 reward の推移 PNG も同じスレッドへ投稿されます。
 Slack の設定はリポジトリ直下の `.env` に置けます。まず `.env.example` をコピーして、ログインノードで実際の値を入れてください:
 
@@ -93,6 +94,9 @@ Slack app の Bot Token Scopes には `files:write`、`files:read`、`chat:write
 ```bash
 ./local-scripts/slack-uploader.sh
 ```
+
+このスクリプトは `TOY_ACAI_OUTPUT_DIR` (既定 `outputs/rl`) の下にある `run_*/slack` を全て監視します。
+特定の run だけを投稿したい場合は `sim/slack_uploader.py --spool outputs/rl/run_<timestamp>/slack` を指定してください。
 
 注意:
 

@@ -417,7 +417,8 @@ loss = policy_loss + value_coef * value_loss - entropy_coef * entropy
 
 学習を起動するたびに、`--out-dir` (既定 `outputs/rl`) の下に `run_<timestamp>` ディレクトリが新規に作成され、その run 専用の `checkpoints/`、`media/`、`slack/`、`*.jsonl` がそこへ書き込まれます。
 これにより、過去の checkpoint や metrics は上書きされません。
-加えて、`outputs/rl/latest` の symlink が最新の run ディレクトリへ向け直されるため、slack uploader など外部のプロセスは latest を参照すれば最新ランの出力に追随できます。
+加えて、`outputs/rl/latest` の symlink が最新の run ディレクトリへ向け直されます。
+Slack uploader は既定で `outputs/rl/run_*/slack` を巡回するため、同時に複数の学習 run を動かしても各 run の Slack 投稿候補を拾えます。
 
 再開時は `--resume-checkpoint` を指定します (例: `outputs/rl/latest/checkpoints/ppo_latest.pt`)。
 再開ジョブの出力も新しい `run_<timestamp>` に書き出されるため、再開元の checkpoint やログは壊れません。

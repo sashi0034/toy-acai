@@ -348,6 +348,7 @@ def run_episode(
     # 1 エピソード分だけ環境を動かす。
     # 学習時は buffer に経験を保存し、評価時は buffer=None にして方策を更新しない。
     observations = env.reset()
+    trainer.reset_exploration_noise()
     if value_gif is not None:
         env.take_render_frame()
     total_reward = 0.0

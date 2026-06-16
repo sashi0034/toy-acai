@@ -1,11 +1,16 @@
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import torch
 import torch.nn as nn
 from torch.distributions import Bernoulli, Normal
+
+
+# 連続行動の探索ノイズを前 step からどれだけ残すかの AR(1) 相関係数。
+# 0 にすると毎 step 独立サンプルになる。
+CONTINUOUS_NOISE_CORRELATION = 0.95
 
 
 class ActorCritic(nn.Module):
@@ -50,6 +55,7 @@ class ActorCritic(nn.Module):
         obs: torch.Tensor,
         deterministic: bool = False,
         fire_threshold: float = 0.5,
+        exploration_noise: Optional[torch.Tensor] = None,
     ):
         mean, log_std, fire_logits, value = self.forward(obs)
         if deterministic:
@@ -58,7 +64,10 @@ class ActorCritic(nn.Module):
             fire = (torch.sigmoid(fire_logits) >= fire_threshold).float()
         else:
             # 学習時は確率的に行動する。いろいろ試すことで、後から良い行動を強められる。
-            raw_cont = Normal(mean, log_std.exp()).sample()
+            if exploration_noise is None:
+                raw_cont = Normal(mean, log_std.exp()).sample()
+            else:
+                raw_cont = mean + log_std.exp() * exploration_noise
             fire = Bernoulli(logits=fire_logits).sample()
         action = torch.cat([raw_cont, fire], dim=-1)
         # PPO の確率計算には tanh 前の raw_cont を使い、
@@ -232,6 +241,26 @@ class _SingleAgentPPOTrainer:
             log_std_init=config.log_std_init,
         ).to(device)
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=config.lr)
+        self._continuous_noise: Optional[torch.Tensor] = None
+
+    def reset_exploration_noise(self) -> None:
+        self._continuous_noise = None
+
+    def _next_exploration_noise(self, shape: torch.Size) -> torch.Tensor:
+        # z_t は標準正規のまま AR(1) で時間相関を持たせる。
+        # raw action へは mean + std * z_t として反映するため、各 step の周辺分布は従来と同じ。
+        correlation = float(np.clip(CONTINUOUS_NOISE_CORRELATION, 0.0, 0.999))
+        innovation = torch.randn(shape, dtype=torch.float32, device=self.device)
+        if correlation <= 0.0:
+            self._continuous_noise = None
+            return innovation
+        if self._continuous_noise is None or self._continuous_noise.shape != shape:
+            noise = innovation
+        else:
+            innovation_scale = float(np.sqrt(max(0.0, 1.0 - correlation * correlation)))
+            noise = correlation * self._continuous_noise + innovation_scale * innovation
+        self._continuous_noise = noise.detach()
+        return noise
 
     def act(self, observation: np.ndarray, deterministic: bool = False):
         # モデルは batch 次元つきのテンソルを受け取るため、1 機ぶんの観測にも [None, :] を付ける。
@@ -241,10 +270,14 @@ class _SingleAgentPPOTrainer:
             device=self.device,
         )
         with torch.no_grad():
+            exploration_noise = None
+            if not deterministic:
+                exploration_noise = self._next_exploration_noise(torch.Size((1, 2)))
             actions, env_actions, log_probs, _, values = self.model.act(
                 obs_tensor,
                 deterministic=deterministic,
                 fire_threshold=self.config.eval_fire_threshold,
+                exploration_noise=exploration_noise,
             )
         return (
             actions[0].cpu().numpy(),
@@ -351,6 +384,10 @@ class PPOTrainer:
             _SingleAgentPPOTrainer(obs_dim, config, device)
             for _ in range(agent_count)
         ]
+
+    def reset_exploration_noise(self) -> None:
+        for agent in self.agents:
+            agent.reset_exploration_noise()
 
     def act(self, observations: np.ndarray, deterministic: bool = False):
         # observations は [agent_count, obs_dim]。各行を各機の trainer に渡す。

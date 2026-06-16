@@ -402,6 +402,10 @@ loss = policy_loss + value_coef * value_loss - entropy_coef * entropy
 評価では GIF を出力できます。
 学習時の探索ノイズを切ることで、その時点の方策が安定してどれくらい勝てるかを見ます。
 
+GIF の各フレームには、Slack で見たときに方策の動きを把握しやすいように、
+青チーム各機の critic 値とそのフレーム時点までの累計報酬を `B0 critic=+1.234 reward=+0.789` の形でオーバーレイ表示します。
+critic はその step で観測した状態 \(V(s)\) の推定値、reward は `auxiliary_agent_rewards()` と終端スコアを合算した step 増分をエピソード開始から該当フレームまで足し上げたエージェント毎の累計値です。
+
 ログには主に次の指標が出ます。
 
 - `reward`: 1 エピソードの平均報酬和
@@ -411,6 +415,16 @@ loss = policy_loss + value_coef * value_loss - entropy_coef * entropy
 - `fire_input_rate`: `fire` を出した割合
 - `mean_accel` / `mean_turn` / `mean_abs_turn`: 行動の平均
 - `policy_loss` / `value_loss` / `entropy` / `approx_kl` / `clip_fraction`: PPO 更新の統計
+
+### 補助報酬成分のエピソード累計
+
+`auxiliary_agent_rewards()` は step 単位で `evasion_reward` / `kill_reward` / `missile_fire_reward` / `movement_reward` / `out_of_bounds_penalty` / `death_penalty` / `blue_kills` / `blue_losses` / `hit_events` / `survival_reward` を返します。
+ログ用の集計はこれらを step 毎に積み上げ、`train_metrics.jsonl` / `eval_metrics.jsonl` ではエピソード合計として記録します。
+`mean_movement_distance` だけは step 平均として 1 エピソード内の平均値を出します。
+そのため例えば「ミサイル回避報酬がエピソード内で何度発火したか」は `evasion_reward / AUX_EVASION_REWARD` で確認できます。
+
+実装上は `train_ppo.EpisodeInfoAggregator` がこの集計を担当し、`run_episode()` が step ごとに `add(info)` を呼び、ループ終了後に `apply(last_info)` で最終 step 由来の値(`terminal_score` / `outcome` / `blue_alive` / `red_alive`)と合体させています。
+したがって最終 step だけに依存するキー(終端スコアや勝敗)はそのまま最後の値を、step 増分のキーはエピソード累計をログに残します。
 
 ## checkpoint と再開
 

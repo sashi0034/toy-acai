@@ -34,12 +34,41 @@ class ValueGifTest(unittest.TestCase):
             ],
         )
 
+    def test_value_overlay_lines_include_reward_when_provided(self):
+        self.assertEqual(
+            value_overlay_lines(
+                [1.0, -2.5, 0.0, 3.25],
+                [0.1, -0.2, 0.0, 0.5],
+            ),
+            [
+                "B0 critic=+1.000 reward=+0.100",
+                "B1 critic=-2.500 reward=-0.200",
+                "B2 critic=+0.000 reward=+0.000",
+                "B3 critic=+3.250 reward=+0.500",
+            ],
+        )
+
+    def test_value_overlay_lines_reject_mismatched_lengths(self):
+        with self.assertRaises(ValueError):
+            value_overlay_lines([1.0, 2.0], [0.1])
+
     def test_draw_value_overlay_preserves_image_size(self):
         frame = np.full((32, 48, 4), 255, dtype=np.uint8)
 
         image = draw_value_overlay(frame, [0.1, 0.2, 0.3, 0.4])
 
         self.assertEqual(image.size, (48, 32))
+
+    def test_draw_value_overlay_with_reward_preserves_image_size(self):
+        frame = np.full((32, 64, 4), 255, dtype=np.uint8)
+
+        image = draw_value_overlay(
+            frame,
+            [0.1, 0.2, 0.3, 0.4],
+            [0.0, -0.1, 0.2, -0.3],
+        )
+
+        self.assertEqual(image.size, (64, 32))
 
     def test_recorder_saves_gif_with_recorded_frames(self):
         frame_a = np.full((32, 48, 4), 255, dtype=np.uint8)
@@ -49,8 +78,8 @@ class ValueGifTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp_dir:
             gif_path = Path(tmp_dir) / "value.gif"
             recorder = ValueGifRecorder(gif_path, render_interval=0.1)
-            recorder.record(frame_a, [0.1, 0.2, 0.3, 0.4])
-            recorder.record(frame_b, [-0.1, -0.2, -0.3, -0.4])
+            recorder.record(frame_a, [0.1, 0.2, 0.3, 0.4], [0.0, 0.0, 0.0, 0.0])
+            recorder.record(frame_b, [-0.1, -0.2, -0.3, -0.4], [0.1, -0.1, 0.2, -0.2])
             recorder.save()
 
             with Image.open(gif_path) as image:

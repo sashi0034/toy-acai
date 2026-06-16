@@ -63,6 +63,44 @@ class EpisodeInfoAggregatorTest(unittest.TestCase):
 
 
 @unittest.skipUnless(HAS_TORCH, "torch is required")
+class RunEpisodeValueGifTest(unittest.TestCase):
+    def test_value_gif_receives_cumulative_per_agent_rewards(self):
+        # GIF オーバーレイの reward 表示はフレーム時点までの累計報酬になる。
+        # step 毎の rewards が [+0.5, -0.5] -> [+1.0, +0.0] -> [-2.0, +3.0] のとき、
+        # 表示用に渡される累計は [+0.5, -0.5] -> [+1.5, -0.5] -> [-0.5, +2.5] になるはず。
+        step_infos = [
+            {"rewards": [0.5, -0.5]},
+            {"rewards": [1.0, 0.0]},
+            {"rewards": [-2.0, 3.0]},
+        ]
+        env = _FakeRenderableEnv(step_infos)
+        trainer = _FakeTrainer()
+        value_gif = _RecordingValueGif()
+
+        train_ppo.run_episode(env, trainer, buffer=None, value_gif=value_gif)
+
+        self.assertEqual(len(value_gif.recorded_rewards), 3)
+        np.testing.assert_allclose(value_gif.recorded_rewards[0], [0.5, -0.5])
+        np.testing.assert_allclose(value_gif.recorded_rewards[1], [1.5, -0.5])
+        np.testing.assert_allclose(value_gif.recorded_rewards[2], [-0.5, 2.5])
+
+    def test_value_gif_cumulative_rewards_are_independent_of_recorded_values(self):
+        # values は trainer から来るので毎 step 上書きされるだけ。reward 側は累積されることを担保する。
+        step_infos = [
+            {"rewards": [0.1, 0.2]},
+            {"rewards": [0.1, 0.2]},
+        ]
+        env = _FakeRenderableEnv(step_infos)
+        trainer = _FakeTrainer()
+        value_gif = _RecordingValueGif()
+
+        train_ppo.run_episode(env, trainer, buffer=None, value_gif=value_gif)
+
+        np.testing.assert_allclose(value_gif.recorded_rewards[0], [0.1, 0.2])
+        np.testing.assert_allclose(value_gif.recorded_rewards[1], [0.2, 0.4])
+
+
+@unittest.skipUnless(HAS_TORCH, "torch is required")
 class RunEpisodeAggregationTest(unittest.TestCase):
     def test_run_episode_reports_cumulative_auxiliary_rewards(self):
         # 3 step ぶんの補助報酬が、最後の step に依存せず合計として記録されることを確認する。
@@ -176,6 +214,45 @@ class _FakeTrainer:
         log_probs = np.zeros((agent_count,), dtype=np.float32)
         values = np.zeros((agent_count,), dtype=np.float32)
         return raw_actions, env_actions, log_probs, values
+
+
+class _FakeRenderableEnv:
+    """take_render_frame が常にダミーのフレームを返すテスト用環境。"""
+
+    def __init__(self, step_infos):
+        self._step_infos = step_infos
+        self.max_steps = max(len(step_infos), 1)
+        self._step_index = 0
+        self._agent_count = len(step_infos[0]["rewards"]) if step_infos else 1
+
+    def reset(self):
+        self._step_index = 0
+        return np.zeros((self._agent_count, 1), dtype=np.float32)
+
+    def step(self, _actions):
+        info = self._step_infos[self._step_index]
+        done = self._step_index == len(self._step_infos) - 1
+        self._step_index += 1
+        rewards = np.array(info["rewards"], dtype=np.float32)
+        return StepResult(
+            observations=np.zeros((self._agent_count, 1), dtype=np.float32),
+            rewards=rewards,
+            done=done,
+            info={"reward_mean": float(np.mean(rewards))},
+        )
+
+    def take_render_frame(self):
+        return np.zeros((4, 4, 4), dtype=np.uint8)
+
+
+class _RecordingValueGif:
+    def __init__(self):
+        self.recorded_values = []
+        self.recorded_rewards = []
+
+    def record(self, frame, values, rewards):
+        self.recorded_values.append(np.asarray(values, dtype=np.float32).copy())
+        self.recorded_rewards.append(np.asarray(rewards, dtype=np.float32).copy())
 
 
 if __name__ == "__main__":

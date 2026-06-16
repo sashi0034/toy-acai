@@ -404,6 +404,8 @@ def run_episode(
     abs_turn_sum = 0.0
     fire_sum = 0.0
     episode_steps = 0
+    # GIF オーバーレイの reward 表示はそのフレーム時点の累計報酬にする。
+    cumulative_agent_rewards: Optional[np.ndarray] = None
     aggregator = EpisodeInfoAggregator()
     for _ in range(env.max_steps):
         # trainer.act は各味方機の観測から行動を決める。
@@ -415,10 +417,15 @@ def run_episode(
         abs_turn_sum += float(np.sum(np.abs(env_actions[:, 1])))
         fire_sum += float(np.sum(env_actions[:, 2]))
         result = env.step(env_actions)
+        step_rewards = np.asarray(result.rewards, dtype=np.float32)
+        if cumulative_agent_rewards is None:
+            cumulative_agent_rewards = step_rewards.copy()
+        else:
+            cumulative_agent_rewards = cumulative_agent_rewards + step_rewards
         if value_gif is not None:
             frame = env.take_render_frame()
             if frame is not None:
-                value_gif.record(frame, values)
+                value_gif.record(frame, values, cumulative_agent_rewards)
         if buffer is not None:
             # PPO では「当時の行動確率」と「価値推定」を後で使うため、
             # 観測・行動・報酬だけでなく log_prob と value も一緒に保存する。

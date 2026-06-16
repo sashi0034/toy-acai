@@ -16,8 +16,11 @@ MAX_SPEED = 360.0
 RENDER_INTERVAL = 0.1
 AUX_KILL_REWARD = 1.0
 AUX_DEATH_PENALTY = 1.0
-AUX_ALIVE_ADVANTAGE_REWARD_PER_STEP = 0.002
-AUX_SURVIVAL_REWARD_PER_STEP = 0.0015
+# AUX_SURVIVAL_REWARD_PER_STEP = 0.0015 # 生存報酬は一旦無効化する。必要になったら再度有効化する。
+AUX_OUT_OF_BOUNDS_PENALTY_PER_STEP = 0.03
+AUX_INCOMING_MISSILE_PENALTY = 0.03
+AUX_INCOMING_MISSILE_RADIUS = 100.0
+AUX_MISSILE_FIRE_REWARD = 0.03
 # AUX_MOVEMENT_REWARD_PER_DISTANCE = 0.10
 
 
@@ -339,15 +342,17 @@ def auxiliary_agent_rewards(
     opponent_team: int = TEAM_RULE,
     kill_reward: float = AUX_KILL_REWARD,
     death_penalty: float = AUX_DEATH_PENALTY,
-    alive_advantage_reward_per_step: float = AUX_ALIVE_ADVANTAGE_REWARD_PER_STEP,
-    survival_reward_per_step: float = AUX_SURVIVAL_REWARD_PER_STEP,
+    out_of_bounds_penalty_per_step: float = AUX_OUT_OF_BOUNDS_PENALTY_PER_STEP,
+    incoming_missile_penalty: float = AUX_INCOMING_MISSILE_PENALTY,
+    incoming_missile_radius: float = AUX_INCOMING_MISSILE_RADIUS,
+    missile_fire_reward: float = AUX_MISSILE_FIRE_REWARD,
     # movement_reward_per_distance: float = AUX_MOVEMENT_REWARD_PER_DISTANCE,
     learner_count: Optional[int] = None,
-    opponent_count: Optional[int] = None,
 ) -> Tuple[np.ndarray, Dict[str, float]]:
     # 毎ステップ与える補助報酬。終端報酬だけだと「何が良かったか」が遠すぎるため、
-    # 生存・撃墜・損失を小さな手がかりとして追加して学習を助ける。
+    # 場外・ミサイル・撃墜・損失を小さな手がかりとして追加して学習を助ける。
     fighters = np.asarray(obs["fighters"], dtype=np.float64)
+    missiles = np.asarray(obs["missiles"], dtype=np.float64)
     hit_events = np.asarray(
         obs.get("hit_events", np.zeros((0, 4), dtype=np.float64)),
         dtype=np.float64,
@@ -361,30 +366,74 @@ def auxiliary_agent_rewards(
     learner_fighters = fighters[learner_indices]
     alive = learner_fighters[:, 6] > 0.0
     in_bounds = learner_fighters[:, 8] <= 0.0
-    survival_eligible = alive & in_bounds
-    # 生きていて、かつ戦場内にいる機体だけを小さく加点する。
-    rewards[survival_eligible] += float(survival_reward_per_step)
-    survival_reward = float(np.sum(survival_eligible) * survival_reward_per_step)
-    team_size = max(1, len(learner_indices))
-    opponent_size = max(
-        1,
-        int(opponent_count)
-        if opponent_count is not None
-        else int(np.sum(fighters[:, 0] == opponent_team)),
+    out_of_bounds = alive & ~in_bounds
+    survival_reward = 0.0
+    # 生存報酬は実験のため一旦無効化している。
+    # survival_eligible = alive & in_bounds
+    # rewards[survival_eligible] += float(survival_reward_per_step)
+
+    out_of_bounds_penalties = out_of_bounds.astype(np.float64) * float(
+        out_of_bounds_penalty_per_step
     )
-    blue_alive = int(np.sum(fighters[learner_indices, 6] > 0.0))
-    red_alive = int(np.sum((fighters[:, 0] == opponent_team) & (fighters[:, 6] > 0.0)))
-    alive_advantage = (blue_alive / float(team_size)) - (red_alive / float(opponent_size))
-    per_alive_advantage_reward = float(alive_advantage_reward_per_step) * alive_advantage
-    # 味方が敵より多く残っている状態を少し評価する。チーム全体の形勢を伝える報酬。
-    rewards[alive] += per_alive_advantage_reward
-    advantage_reward = float(np.sum(alive) * per_alive_advantage_reward)
+    rewards -= out_of_bounds_penalties.astype(np.float32)
+    out_of_bounds_penalty_total = float(np.sum(out_of_bounds_penalties))
+
+    incoming_missile_penalty_total = 0.0
+    missile_radius = max(float(incoming_missile_radius), 1e-6)
+    if missiles.ndim == 1:
+        missiles = missiles.reshape((-1, 8))
+    enemy_missiles = (
+        missiles[missiles[:, 6] != float(learner_team)]
+        if len(missiles)
+        else missiles
+    )
+    for agent_idx, fighter_idx in enumerate(learner_indices):
+        if not alive[agent_idx]:
+            continue
+        fighter = fighters[int(fighter_idx)]
+        fighter_pos = fighter[2:4]
+        fighter_penalty = 0.0
+        for missile in enemy_missiles:
+            rel = missile[0:2] - fighter_pos
+            distance = math.hypot(float(rel[0]), float(rel[1]))
+            if distance <= 1e-6 or distance > missile_radius:
+                continue
+            missile_yaw = float(missile[2])
+            missile_forward = np.array(
+                [math.cos(missile_yaw), math.sin(missile_yaw)], dtype=np.float64
+            )
+            incoming_alignment = -float(np.dot(rel / distance, missile_forward))
+            targets_fighter = int(missile[7]) == int(fighter_idx)
+            if incoming_alignment <= 0.5 and not targets_fighter:
+                continue
+            near_factor = 1.0 - distance / missile_radius
+            incoming_factor = max(incoming_alignment, 0.5 if targets_fighter else 0.0)
+            fighter_penalty += (
+                float(incoming_missile_penalty)
+                * near_factor
+                * float(np.clip(incoming_factor, 0.0, 1.0))
+            )
+        if fighter_penalty > 0.0:
+            rewards[agent_idx] -= float(fighter_penalty)
+            incoming_missile_penalty_total += fighter_penalty
 
     movement_reward = 0.0
     mean_movement_distance = 0.0
+    missile_fire_reward_total = 0.0
     if previous_obs is not None:
         previous_fighters = np.asarray(previous_obs["fighters"], dtype=np.float64)
         previous_alive = previous_fighters[learner_indices, 6] > 0.0
+        previous_cooldown = previous_fighters[learner_indices, 7]
+        current_cooldown = learner_fighters[:, 7]
+        launched = (
+            alive
+            & previous_alive
+            & (current_cooldown > previous_cooldown + 1e-6)
+        )
+        fire_rewards = launched.astype(np.float64) * float(missile_fire_reward)
+        rewards += fire_rewards.astype(np.float32)
+        missile_fire_reward_total = float(np.sum(fire_rewards))
+
         movement_tracked = alive & previous_alive
         movement_eligible = movement_tracked & in_bounds
         movement_distance = np.linalg.norm(
@@ -433,9 +482,11 @@ def auxiliary_agent_rewards(
     death_penalty_total = float(blue_losses * death_penalty)
     info = {
         "survival_reward": survival_reward,
-        "advantage_reward": advantage_reward,
+        "out_of_bounds_penalty": out_of_bounds_penalty_total,
+        "incoming_missile_penalty": incoming_missile_penalty_total,
         "movement_reward": movement_reward,
         "mean_movement_distance": mean_movement_distance,
+        "missile_fire_reward": missile_fire_reward_total,
         "kill_reward": kill_reward_total,
         "death_penalty": death_penalty_total,
         "blue_kills": float(blue_kills),
@@ -564,7 +615,6 @@ class ToyAcaiPPOEnv:
             next_obs,
             previous_obs=self.last_obs,
             learner_count=self.learner_count,
-            opponent_count=self.opponent_count,
         )
         info = {
             "blue_alive": float(blue_alive),

@@ -6,7 +6,7 @@ __pycache__
 
 logs/
 
-outputs/
+/outputs
 
 local-scripts/
 !local-scripts/!.gitkeep

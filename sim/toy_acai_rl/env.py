@@ -8,11 +8,13 @@ import numpy as np
 
 TEAM_LEARN = 0
 TEAM_RULE = 1
+
 # 観測に入れるミサイル数を固定する。ニューラルネットは入力長が固定である必要があるため、
 # 足りない分は 0 で埋める。
 MAX_TRACKED_MISSILES = 8
 MISSILE_OBS_FEATURES = 7
 MAX_SPEED = 360.0
+SEEKER_HALF_ANGLE = 0.85
 RENDER_INTERVAL = 0.1
 
 MISSILE_COLUMN_COUNT = 9
@@ -27,7 +29,7 @@ AUX_DEATH_PENALTY = 20.0
 # AUX_SURVIVAL_REWARD_PER_STEP = 0.0015 # 生存報酬は一旦無効化する。必要になったら再度有効化する。
 AUX_OUT_OF_BOUNDS_PENALTY_PER_STEP = 0.03
 AUX_EVASION_REWARD = 1.0
-AUX_MISSILE_FIRE_REWARD = 0.03
+AUX_MISSILE_FIRE_REWARD = 0.5
 
 
 def add_default_module_paths(
@@ -243,8 +245,7 @@ def build_agent_observations(
             closing = 0.0
             if distance > 1e-6:
                 closing = -float(np.dot(rel, rel_velocity)) / (distance * MAX_SPEED)
-            seeker_half_angle = 0.85
-            in_fire_arc = 1.0 if abs(bearing_delta) <= seeker_half_angle else 0.0
+            in_fire_arc = 1.0 if abs(bearing_delta) <= SEEKER_HALF_ANGLE else 0.0
             # 他機との関係は「自機から見て前後どちらか・左右どちらか」を中心に表す。
             # 絶対座標よりも、旋回や射撃の判断に直接つながりやすい。
             features.extend(
@@ -362,6 +363,28 @@ def _missile_closing(missile: np.ndarray, fighter: np.ndarray) -> float:
     return -float(np.dot(rel, rel_velocity)) / (distance * MAX_SPEED)
 
 
+def _has_living_opponent_in_fire_arc(
+    fighter: np.ndarray,
+    fighters: np.ndarray,
+    opponent_team: int,
+) -> bool:
+    # C++ 側のミサイルロック条件と同じく、前方の射界内に生存敵がいれば True。
+    shooter_position = fighter[2:4]
+    shooter_yaw = float(fighter[4])
+    opponent_indices = np.where(
+        (fighters[:, 0] == float(opponent_team)) & (fighters[:, 6] > 0.0)
+    )[0]
+    for opponent_idx in opponent_indices:
+        rel = fighters[opponent_idx, 2:4] - shooter_position
+        distance = math.hypot(float(rel[0]), float(rel[1]))
+        if distance <= 1e-6:
+            continue
+        bearing = math.atan2(float(rel[1]), float(rel[0]))
+        if abs(_angle_delta(bearing, shooter_yaw)) <= SEEKER_HALF_ANGLE:
+            return True
+    return False
+
+
 def _match_disappeared_self_tracking_missiles(
     prev_self_missiles: np.ndarray,
     curr_self_missiles: np.ndarray,
@@ -438,8 +461,22 @@ def auxiliary_agent_rewards(
         previous_alive = previous_fighters[learner_indices, 6] > 0.0
         previous_cooldown = previous_fighters[learner_indices, 7]
         current_cooldown = learner_fighters[:, 7]
+        aimed_at_opponent = np.array(
+            [
+                _has_living_opponent_in_fire_arc(
+                    previous_fighters[int(fighter_idx)],
+                    previous_fighters,
+                    opponent_team,
+                )
+                for fighter_idx in learner_indices
+            ],
+            dtype=bool,
+        )
         launched = (
-            alive & previous_alive & (current_cooldown > previous_cooldown + 1e-6)
+            alive
+            & previous_alive
+            & (current_cooldown > previous_cooldown + 1e-6)
+            & aimed_at_opponent
         )
         fire_rewards = launched.astype(np.float64) * float(missile_fire_reward)
         rewards += fire_rewards.astype(np.float32)

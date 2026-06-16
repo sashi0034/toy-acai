@@ -28,6 +28,7 @@ def make_obs(
     red_health=(1.0, 1.0, 1.0, 1.0),
     hit_events=None,
     blue_positions=None,
+    red_positions=None,
     blue_cooldowns=None,
     blue_out_of_bounds_time=None,
     missiles=None,
@@ -45,6 +46,8 @@ def make_obs(
     fighters[4:, 0] = TEAM_RULE
     fighters[4:, 1] = np.arange(4)
     fighters[4:, 6] = red_health
+    if red_positions is not None:
+        fighters[4:, 2:4] = np.asarray(red_positions, dtype=np.float64)
     if hit_events is None:
         hit_events = np.zeros((0, 4), dtype=np.float64)
     if missiles is None:
@@ -322,8 +325,28 @@ class AuxiliaryRewardsTest(unittest.TestCase):
         self.assertAlmostEqual(info["evasion_reward"], AUX_EVASION_REWARD)
 
     def test_missile_fire_reward_uses_cooldown_increase(self):
-        previous_obs = make_obs(blue_cooldowns=(0.0, 1.5, 0.0, 0.0))
-        current_obs = make_obs(blue_cooldowns=(3.5, 1.4, 0.0, 3.5))
+        blue_positions = [
+            [0.0, 0.0],
+            [0.0, 50.0],
+            [0.0, 100.0],
+            [0.0, 150.0],
+        ]
+        red_positions = [
+            [100.0, 0.0],
+            [100.0, 150.0],
+            [100.0, 300.0],
+            [100.0, 450.0],
+        ]
+        previous_obs = make_obs(
+            blue_positions=blue_positions,
+            red_positions=red_positions,
+            blue_cooldowns=(0.0, 1.5, 0.0, 0.0),
+        )
+        current_obs = make_obs(
+            blue_positions=blue_positions,
+            red_positions=red_positions,
+            blue_cooldowns=(3.5, 1.4, 0.0, 3.5),
+        )
 
         rewards, info = auxiliary_agent_rewards(current_obs, previous_obs=previous_obs)
 
@@ -332,6 +355,33 @@ class AuxiliaryRewardsTest(unittest.TestCase):
         expected[3] += AUX_MISSILE_FIRE_REWARD
         np.testing.assert_allclose(rewards, expected, atol=1e-8)
         self.assertAlmostEqual(info["missile_fire_reward"], 2 * AUX_MISSILE_FIRE_REWARD)
+
+    def test_missile_fire_reward_requires_enemy_in_fire_arc(self):
+        previous_obs = make_obs(
+            blue_positions=[[0.0, 0.0]] * 4,
+            red_positions=[
+                [-100.0, 0.0],
+                [-100.0, 50.0],
+                [-100.0, 100.0],
+                [-100.0, 150.0],
+            ],
+            blue_cooldowns=(0.0, 0.0, 0.0, 0.0),
+        )
+        current_obs = make_obs(
+            blue_positions=[[0.0, 0.0]] * 4,
+            red_positions=[
+                [-100.0, 0.0],
+                [-100.0, 50.0],
+                [-100.0, 100.0],
+                [-100.0, 150.0],
+            ],
+            blue_cooldowns=(3.5, 0.0, 0.0, 0.0),
+        )
+
+        rewards, info = auxiliary_agent_rewards(current_obs, previous_obs=previous_obs)
+
+        np.testing.assert_allclose(rewards, np.zeros((4,), dtype=np.float32), atol=1e-8)
+        self.assertAlmostEqual(info["missile_fire_reward"], 0.0)
 
     def test_blue_hit_event_rewards_shooter_only(self):
         rewards, info = auxiliary_agent_rewards(make_obs(hit_events=[[2, 0, 4, 1]]))

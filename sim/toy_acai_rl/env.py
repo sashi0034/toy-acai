@@ -464,6 +464,7 @@ class ToyAcaiPPOEnv:
         render_interval: float = RENDER_INTERVAL,
         random_start_steps: int = 0,
         learner_count: Optional[int] = None,
+        opponent_count: Optional[int] = None,
         rng: Optional[object] = None,
     ):
         self.core = toy_acai_core
@@ -475,6 +476,7 @@ class ToyAcaiPPOEnv:
         self.render_interval = render_interval
         self.random_start_steps = random_start_steps
         self.learner_count = self._clamp_learner_count(learner_count)
+        self.opponent_count = self._clamp_learner_count(opponent_count)
         self.rng = rng if rng is not None else np.random.default_rng()
         self.env = self._make_env()
         self.last_obs = None
@@ -496,6 +498,7 @@ class ToyAcaiPPOEnv:
             "render_height": int(1080 * 0.3),
             "render_interval": self.render_interval,
             "active_blue_count": self.learner_count,
+            "active_red_count": self.opponent_count,
         }
         return self.core.BattlefieldEnv(**env_kwargs)
 
@@ -542,7 +545,7 @@ class ToyAcaiPPOEnv:
         # 終了条件は「どちらかが全滅」または「最大ステップ到達」。
         fighters = np.asarray(next_obs["fighters"], dtype=np.float64)
         blue_alive = self._team_alive(fighters, TEAM_LEARN, self.learner_count)
-        red_alive = self._team_alive(fighters, TEAM_RULE)
+        red_alive = self._team_alive(fighters, TEAM_RULE, self.opponent_count)
         done = bool(
             blue_alive == 0
             or red_alive == 0
@@ -552,7 +555,7 @@ class ToyAcaiPPOEnv:
             next_obs,
             previous_obs=self.last_obs,
             learner_count=self.learner_count,
-            opponent_count=int(self.core.TEAM_FIGHTER_COUNT),
+            opponent_count=self.opponent_count,
         )
         info = {
             "blue_alive": float(blue_alive),
@@ -568,7 +571,7 @@ class ToyAcaiPPOEnv:
                 episode_steps=self.step_count,
                 max_steps=self.max_steps,
                 team_size=self.learner_count,
-                opponent_team_size=int(self.core.TEAM_FIGHTER_COUNT),
+                opponent_team_size=self.opponent_count,
             )
             agent_rewards += score
             info["terminal_score"] = score

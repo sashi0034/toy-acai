@@ -4,7 +4,7 @@ import json
 import os
 import time
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Tuple
 
 import numpy as np
 import torch
@@ -15,6 +15,15 @@ from toy_acai_rl.env import (
     observation_dim,
 )
 from toy_acai_rl.ppo import PPOConfig, PPOTrainer, RolloutBuffer
+from toy_acai_rl.curriculum import (
+    CURRICULUM_EVAL_EVERY,
+    CURRICULUM_LEARNER_COUNT,
+    CURRICULUM_PROMOTION_EVALS,
+    CURRICULUM_PROMOTION_WINS,
+    CURRICULUM_STAGE_MAX_EPISODES,
+    CURRICULUM_STAGES,
+    should_promote_curriculum_stage,
+)
 
 
 SLACK_REWARD_CHART_POST_INTERVAL = 10
@@ -98,7 +107,12 @@ def make_spool_record(spool_root: Path, gif_path: Path, metrics: dict) -> None:
     tmp_path.replace(final_path)
 
 
-def reward_history_from_jsonl(path: Path, max_episode: int) -> list[dict]:
+def reward_history_from_jsonl(
+    path: Path,
+    max_episode: int,
+    opponent_count: Optional[int] = None,
+    curriculum_stage: Optional[int] = None,
+) -> list[dict]:
     if max_episode <= 0 or not path.exists():
         return []
     history = []
@@ -108,8 +122,22 @@ def reward_history_from_jsonl(path: Path, max_episode: int) -> list[dict]:
         try:
             row = json.loads(line)
             episode = int(row["episode"])
-            if episode <= max_episode:
-                history.append({"episode": episode, "reward": float(row["reward"])})
+            if episode > max_episode:
+                continue
+            row_opponent_count = row.get("opponent_count")
+            row_curriculum_stage = row.get("curriculum_stage")
+            if opponent_count is not None and int(row_opponent_count) != int(opponent_count):
+                continue
+            if curriculum_stage is not None and int(row_curriculum_stage) != int(curriculum_stage):
+                continue
+            history.append(
+                {
+                    "episode": episode,
+                    "reward": float(row["reward"]),
+                    "opponent_count": int(row_opponent_count) if row_opponent_count is not None else None,
+                    "curriculum_stage": int(row_curriculum_stage) if row_curriculum_stage is not None else None,
+                }
+            )
         except (KeyError, TypeError, ValueError, json.JSONDecodeError):
             continue
     return history
@@ -123,7 +151,7 @@ def _format_chart_tick(value: float) -> str:
     return f"{value:.2f}"
 
 
-def make_reward_chart_image(path: Path, reward_history: list[dict]) -> None:
+def make_reward_chart_image(path: Path, reward_history: list[dict], stage_label: Optional[str] = None) -> None:
     from PIL import Image, ImageDraw, ImageFont
 
     if not reward_history:
@@ -204,7 +232,8 @@ def make_reward_chart_image(path: Path, reward_history: list[dict]) -> None:
         draw.ellipse((x - 4, y - 4, x + 4, y + 4), fill=(239, 125, 47), outline=(255, 255, 255), width=2)
 
     latest_episode, latest_reward = points[-1]
-    title = f"toy-acai PPO reward trend ({len(points)} evals)"
+    stage_suffix = f" - {stage_label}" if stage_label else ""
+    title = f"toy-acai PPO reward trend{stage_suffix} ({len(points)} evals)"
     subtitle = f"latest: episode {latest_episode}, reward={latest_reward:.3f}"
     draw.text((plot_left, 18), title, fill=(28, 38, 54), font=title_font)
     draw.text((plot_left + 330, 20), subtitle, fill=(66, 78, 96), font=font)
@@ -223,6 +252,8 @@ def make_reward_chart_spool_record(spool_root: Path, chart_path: Path, reward_hi
     pending = spool_root / "pending"
     pending.mkdir(parents=True, exist_ok=True)
     latest = reward_history[-1]
+    opponent_count = latest.get("opponent_count")
+    stage_text = f", red={int(opponent_count)}" if opponent_count is not None else ""
     record_id = f"reward_chart_{int(latest['episode']):06d}_{int(time.time())}"
     tmp_path = pending / f".{record_id}.tmp"
     final_path = pending / f"{record_id}.json"
@@ -232,11 +263,16 @@ def make_reward_chart_spool_record(spool_root: Path, chart_path: Path, reward_hi
         "reward": float(latest["reward"]),
         "comment": (
             f"toy-acai PPO reward trend after {SLACK_REWARD_CHART_POST_INTERVAL} Slack updates: "
-            f"latest episode {int(latest['episode'])}, reward={float(latest['reward']):.3f}"
+            f"latest episode {int(latest['episode'])}{stage_text}, reward={float(latest['reward']):.3f}"
         ),
     }
     tmp_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
     tmp_path.replace(final_path)
+
+
+def reset_reward_chart_stage(reward_history: list[dict]) -> int:
+    reward_history.clear()
+    return 0
 
 
 def make_slack_thread_root_record(spool_root: Path, args, repo_root: Path) -> None:
@@ -330,7 +366,133 @@ def add_episode_info_metrics(metrics: dict, info: dict) -> None:
         metrics[key] = float(info.get(key, 0.0))
 
 
-def evaluate(toy_acai_core, trainer: PPOTrainer, args, episode: int, repo_root: Path):
+def make_checkpoint_extra(
+    *,
+    episode: int,
+    obs_dim: int,
+    learner_count: int,
+    stage_index: int,
+    stage_episode: int,
+) -> dict:
+    opponent_count = CURRICULUM_STAGES[stage_index]
+    return {
+        "episode": episode,
+        "global_episode": episode,
+        "obs_dim": obs_dim,
+        "learner_count": learner_count,
+        "curriculum_stage": stage_index + 1,
+        "opponent_count": opponent_count,
+        "stage_episode": stage_episode,
+    }
+
+
+def curriculum_stage_from_checkpoint(checkpoint: dict) -> Tuple[int, int]:
+    opponent_count = int(checkpoint.get("opponent_count", CURRICULUM_STAGES[0]))
+    if opponent_count in CURRICULUM_STAGES:
+        stage_index = CURRICULUM_STAGES.index(opponent_count)
+    else:
+        stage_index = int(checkpoint.get("curriculum_stage", 1)) - 1
+        stage_index = int(np.clip(stage_index, 0, len(CURRICULUM_STAGES) - 1))
+    stage_episode = int(checkpoint.get("stage_episode", 0))
+    return stage_index, stage_episode
+
+
+def make_train_env(toy_acai_core, args, opponent_count: int) -> ToyAcaiPPOEnv:
+    return ToyAcaiPPOEnv(
+        toy_acai_core,
+        max_steps=args.steps,
+        random_start_steps=args.random_start_steps,
+        learner_count=args.learner_count,
+        opponent_count=opponent_count,
+        rng=np.random.default_rng(args.seed),
+    )
+
+
+def evaluate_curriculum(
+    toy_acai_core,
+    trainer: PPOTrainer,
+    args,
+    episode: int,
+    stage_index: int,
+    stage_episode: int,
+) -> dict:
+    opponent_count = CURRICULUM_STAGES[stage_index]
+    wins = 0
+    rewards = []
+    for eval_index in range(CURRICULUM_PROMOTION_EVALS):
+        env = ToyAcaiPPOEnv(
+            toy_acai_core,
+            max_steps=args.steps,
+            random_start_steps=args.random_start_steps,
+            learner_count=args.learner_count,
+            opponent_count=opponent_count,
+            rng=np.random.default_rng(args.seed + episode * 1000 + eval_index),
+        )
+        _, reward, info = run_episode(
+            env,
+            trainer,
+            buffer=None,
+            deterministic=True,
+        )
+        rewards.append(float(reward))
+        if float(info.get("outcome", 0.0)) > 0.0:
+            wins += 1
+
+    win_rate = wins / float(CURRICULUM_PROMOTION_EVALS)
+    promote, reason = should_promote_curriculum_stage(
+        stage_index=stage_index,
+        stage_episode=stage_episode,
+        wins=wins,
+        evals=CURRICULUM_PROMOTION_EVALS,
+    )
+    metrics = {
+        "episode": episode,
+        "curriculum_stage": stage_index + 1,
+        "stage_episode": stage_episode,
+        "opponent_count": opponent_count,
+        "evals": CURRICULUM_PROMOTION_EVALS,
+        "wins": wins,
+        "win_rate": win_rate,
+        "reward_mean": float(np.mean(rewards)) if rewards else 0.0,
+        "promote": bool(promote),
+        "promotion_reason": reason,
+    }
+    write_jsonl(args.out_dir / "curriculum_metrics.jsonl", metrics)
+    return metrics
+
+
+def promote_curriculum_stage(
+    *,
+    stage_index: int,
+    episode: int,
+    stage_episode: int,
+    reason: str,
+    args,
+) -> Tuple[int, int]:
+    next_stage_index = min(stage_index + 1, len(CURRICULUM_STAGES) - 1)
+    metrics = {
+        "episode": episode,
+        "from_stage": stage_index + 1,
+        "to_stage": next_stage_index + 1,
+        "from_opponent_count": CURRICULUM_STAGES[stage_index],
+        "to_opponent_count": CURRICULUM_STAGES[next_stage_index],
+        "stage_episode": stage_episode,
+        "reason": reason,
+    }
+    write_jsonl(args.out_dir / "curriculum_events.jsonl", metrics)
+    print(json.dumps({"curriculum_promotion": metrics}, sort_keys=True), flush=True)
+    return next_stage_index, 0
+
+
+def evaluate(
+    toy_acai_core,
+    trainer: PPOTrainer,
+    args,
+    episode: int,
+    repo_root: Path,
+    stage_index: int,
+    stage_episode: int,
+):
     # 評価では決定論的に動かす。学習中の探索ノイズを切ることで、
     # その時点の方策がどれくらい安定して勝てるかを見やすくする。
     from toy_acai_rl.value_gif import ValueGifRecorder
@@ -346,6 +508,7 @@ def evaluate(toy_acai_core, trainer: PPOTrainer, args, episode: int, repo_root: 
         module_dir=module_dir,
         random_start_steps=args.random_start_steps,
         learner_count=args.learner_count,
+        opponent_count=CURRICULUM_STAGES[stage_index],
         rng=np.random.default_rng(args.seed + episode),
     )
     value_gif = ValueGifRecorder(gif_path, render_interval=env.render_interval)
@@ -367,6 +530,9 @@ def evaluate(toy_acai_core, trainer: PPOTrainer, args, episode: int, repo_root: 
         "blue_alive": info.get("blue_alive", 0.0),
         "red_alive": info.get("red_alive", 0.0),
         "outcome": info.get("outcome", 0.0),
+        "curriculum_stage": stage_index + 1,
+        "stage_episode": stage_episode,
+        "opponent_count": CURRICULUM_STAGES[stage_index],
         "gif": str(gif_path),
     }
     add_episode_info_metrics(metrics, info)
@@ -412,6 +578,7 @@ def main():
         log_std_init=args.log_std_init,
         hidden_dim=hidden_dim,
     )
+    args.learner_count = CURRICULUM_LEARNER_COUNT
     agent_count = int(np.clip(args.learner_count, 1, int(toy_acai_core.TEAM_FIGHTER_COUNT)))
     args.learner_count = agent_count
     trainer = PPOTrainer(
@@ -422,6 +589,8 @@ def main():
     )
     start_episode = 1
     resumed_episode = 0
+    stage_index = 0
+    stage_episode = 0
     if args.resume_checkpoint is not None:
         # 途中再開時は重みだけでなく、観測次元が現在の環境と一致するかも確認する。
         # 観測設計を変えたチェックポイントをそのまま使うと、入力サイズが合わない。
@@ -431,20 +600,19 @@ def main():
             raise ValueError(
                 f"checkpoint obs_dim={checkpoint_obs_dim} does not match env obs_dim={obs_dim}"
             )
-        resumed_episode = int(checkpoint.get("episode", 0))
+        resumed_episode = int(checkpoint.get("global_episode", checkpoint.get("episode", 0)))
         start_episode = resumed_episode + 1
+        stage_index, stage_episode = curriculum_stage_from_checkpoint(checkpoint)
     buffer = RolloutBuffer(agent_count=agent_count)
-    eval_reward_history = reward_history_from_jsonl(args.out_dir / "eval_metrics.jsonl", resumed_episode)
+    eval_reward_history = reward_history_from_jsonl(
+        args.out_dir / "eval_metrics.jsonl",
+        resumed_episode,
+        opponent_count=CURRICULUM_STAGES[stage_index],
+    )
     slack_update_post_count = len(eval_reward_history)
 
     # 学習用環境は 1 つを使い回す。各エピソードの先頭で reset される。
-    train_env = ToyAcaiPPOEnv(
-        toy_acai_core,
-        max_steps=args.steps,
-        random_start_steps=args.random_start_steps,
-        learner_count=args.learner_count,
-        rng=np.random.default_rng(args.seed),
-    )
+    train_env = make_train_env(toy_acai_core, args, CURRICULUM_STAGES[stage_index])
     latest_observations = train_env.reset()
 
     for episode in range(start_episode, args.episodes + 1):
@@ -452,6 +620,7 @@ def main():
         # 1. 方策で 1 エピソード動く
         # 2. 経験を buffer にためる
         # 3. 一定量たまったら PPO で方策を更新する
+        stage_episode += 1
         observations, reward, info = run_episode(train_env, trainer, buffer=buffer, deterministic=False)
         latest_observations = observations
         metrics = {
@@ -461,6 +630,9 @@ def main():
             "red_alive": info.get("red_alive", 0.0),
             "outcome": info.get("outcome", 0.0),
             "buffer_steps": len(buffer),
+            "curriculum_stage": stage_index + 1,
+            "stage_episode": stage_episode,
+            "opponent_count": CURRICULUM_STAGES[stage_index],
         }
         add_episode_info_metrics(metrics, info)
         write_jsonl(args.out_dir / "train_metrics.jsonl", metrics)
@@ -475,15 +647,38 @@ def main():
             write_jsonl(args.out_dir / "update_metrics.jsonl", {"episode": episode, **update_stats})
 
         if args.checkpoint_every > 0 and episode % args.checkpoint_every == 0:
-            checkpoint_extra = {"episode": episode, "obs_dim": obs_dim, "learner_count": agent_count}
+            checkpoint_extra = make_checkpoint_extra(
+                episode=episode,
+                obs_dim=obs_dim,
+                learner_count=agent_count,
+                stage_index=stage_index,
+                stage_episode=stage_episode,
+            )
             trainer.save(args.out_dir / "checkpoints" / f"ppo_{episode:06d}.pt", checkpoint_extra)
             trainer.save(args.out_dir / "checkpoints" / "ppo_latest.pt", checkpoint_extra)
+            trainer.save(
+                args.out_dir / "checkpoints" / f"ppo_stage_red{CURRICULUM_STAGES[stage_index]}_latest.pt",
+                checkpoint_extra,
+            )
 
         if args.render_every > 0 and episode % args.render_every == 0:
             # GIF 生成つきの評価は重いので、毎エピソードではなく間隔を空けて実行する。
-            eval_metrics = evaluate(toy_acai_core, trainer, args, episode, repo_root)
+            eval_metrics = evaluate(
+                toy_acai_core,
+                trainer,
+                args,
+                episode,
+                repo_root,
+                stage_index,
+                stage_episode,
+            )
             eval_reward_history.append(
-                {"episode": int(eval_metrics["episode"]), "reward": float(eval_metrics["reward"])}
+                {
+                    "episode": int(eval_metrics["episode"]),
+                    "reward": float(eval_metrics["reward"]),
+                    "opponent_count": int(eval_metrics["opponent_count"]),
+                    "curriculum_stage": int(eval_metrics["curriculum_stage"]),
+                }
             )
             slack_update_post_count += 1
             if (
@@ -491,16 +686,64 @@ def main():
                 and slack_update_post_count % SLACK_REWARD_CHART_POST_INTERVAL == 0
             ):
                 chart_path = args.out_dir / "media" / f"reward_chart_{episode:06d}.png"
-                make_reward_chart_image(chart_path, eval_reward_history)
+                make_reward_chart_image(
+                    chart_path,
+                    eval_reward_history,
+                    stage_label=f"red={CURRICULUM_STAGES[stage_index]}",
+                )
                 make_reward_chart_spool_record(args.slack_spool, chart_path, eval_reward_history)
             print(json.dumps({"eval": eval_metrics}, sort_keys=True), flush=True)
+
+        if stage_index < len(CURRICULUM_STAGES) - 1:
+            curriculum_metrics = None
+            if episode % CURRICULUM_EVAL_EVERY == 0:
+                curriculum_metrics = evaluate_curriculum(
+                    toy_acai_core,
+                    trainer,
+                    args,
+                    episode,
+                    stage_index,
+                    stage_episode,
+                )
+                print(json.dumps({"curriculum_eval": curriculum_metrics}, sort_keys=True), flush=True)
+                promote = bool(curriculum_metrics["promote"])
+                promotion_reason = str(curriculum_metrics["promotion_reason"])
+            else:
+                promote, promotion_reason = should_promote_curriculum_stage(
+                    stage_index=stage_index,
+                    stage_episode=stage_episode,
+                    wins=0,
+                    evals=0,
+                )
+
+            if promote:
+                stage_index, stage_episode = promote_curriculum_stage(
+                    stage_index=stage_index,
+                    episode=episode,
+                    stage_episode=stage_episode,
+                    reason=promotion_reason,
+                    args=args,
+                )
+                buffer.clear()
+                slack_update_post_count = reset_reward_chart_stage(eval_reward_history)
+                train_env = make_train_env(toy_acai_core, args, CURRICULUM_STAGES[stage_index])
+                latest_observations = train_env.reset()
 
     if len(buffer) > 0:
         # 最後に rollout_steps 未満の経験が余っていても、捨てずに一度だけ更新する。
         last_values = trainer.values(latest_observations)
         update_stats = trainer.update(buffer, last_values)
         write_jsonl(args.out_dir / "update_metrics.jsonl", {"episode": args.episodes, **update_stats})
-    trainer.save(args.out_dir / "checkpoints" / "ppo_latest.pt", {"episode": args.episodes, "obs_dim": obs_dim})
+    trainer.save(
+        args.out_dir / "checkpoints" / "ppo_latest.pt",
+        make_checkpoint_extra(
+            episode=args.episodes,
+            obs_dim=obs_dim,
+            learner_count=agent_count,
+            stage_index=stage_index,
+            stage_episode=stage_episode,
+        ),
+    )
 
 
 if __name__ == "__main__":

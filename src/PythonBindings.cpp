@@ -282,9 +282,11 @@ namespace
             int renderWidth = 960,
             int renderHeight = 540,
             double renderInterval = DefaultRenderInterval,
-            int activeBlueCount = toy_acai::TeamFighterCount)
+            int activeBlueCount = toy_acai::TeamFighterCount,
+            int activeRedCount = toy_acai::TeamFighterCount)
             : m_renderInterval(renderInterval)
             , m_activeBlueCount(std::clamp(activeBlueCount, 1, toy_acai::TeamFighterCount))
+            , m_activeRedCount(std::clamp(activeRedCount, 1, toy_acai::TeamFighterCount))
         {
             if (render && (renderWidth <= 0 || renderHeight <= 0))
             {
@@ -297,7 +299,7 @@ namespace
             }
 
             toy_acai::InitBattlefield(m_context);
-            applyActiveBlueCount();
+            applyActiveFighterCounts();
 
             if (render)
             {
@@ -326,7 +328,7 @@ namespace
         {
             assertRenderOwnerThread();
             toy_acai::InitBattlefield(m_context);
-            applyActiveBlueCount();
+            applyActiveFighterCounts();
             if (m_renderSession)
             {
                 m_renderSession->resetRenderer();
@@ -372,11 +374,17 @@ namespace
         }
 
     private:
-        void applyActiveBlueCount()
+        void applyActiveFighterCounts()
         {
             for (int member = m_activeBlueCount; member < toy_acai::TeamFighterCount; ++member)
             {
                 auto& fighter = m_context.fighters[member];
+                fighter.health = 0.0;
+                fighter.speed = 0.0;
+            }
+            for (int member = m_activeRedCount; member < toy_acai::TeamFighterCount; ++member)
+            {
+                auto& fighter = m_context.fighters[toy_acai::TeamFighterCount + member];
                 fighter.health = 0.0;
                 fighter.speed = 0.0;
             }
@@ -414,6 +422,7 @@ namespace
         std::unique_ptr<RenderSession> m_renderSession;
         double m_renderInterval{};
         int m_activeBlueCount{};
+        int m_activeRedCount{};
     };
 } // namespace
 
@@ -431,12 +440,13 @@ NB_MODULE(toy_acai_core, m)
 
     nb::class_<BattlefieldEnv>(m, "BattlefieldEnv")
         .def(
-            nb::init<bool, int, int, double, int>(),
+            nb::init<bool, int, int, double, int, int>(),
             "render"_a = false,
             "render_width"_a = 960,
             "render_height"_a = 540,
             "render_interval"_a = DefaultRenderInterval,
-            "active_blue_count"_a = toy_acai::TeamFighterCount
+            "active_blue_count"_a = toy_acai::TeamFighterCount,
+            "active_red_count"_a = toy_acai::TeamFighterCount
         )
         .def_prop_ro("render_interval", &BattlefieldEnv::renderInterval)
         .def("reset", &BattlefieldEnv::reset)

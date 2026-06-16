@@ -105,6 +105,44 @@ class AuxiliaryRewardsTest(unittest.TestCase):
         self.assertAlmostEqual(info["survival_reward"], AUX_SURVIVAL_REWARD_PER_STEP)
         self.assertAlmostEqual(info["advantage_reward"], 0.0)
 
+    def test_opponent_count_limits_env_red_team_size(self):
+        core = FakeCore(make_obs())
+        ToyAcaiPPOEnv(core, max_steps=1, learner_count=1, opponent_count=2, rng=object())
+
+        self.assertEqual(core.last_kwargs["active_blue_count"], 1)
+        self.assertEqual(core.last_kwargs["active_red_count"], 2)
+
+    def test_opponent_count_sets_terminal_score_denominator(self):
+        next_obs = make_obs(
+            blue_health=(1.0, 0.0, 0.0, 0.0),
+            red_health=(0.0, 1.0, 0.0, 0.0),
+        )
+        core = FakeCore(next_obs)
+        env = ToyAcaiPPOEnv(core, max_steps=1, learner_count=1, opponent_count=2, rng=object())
+        env.last_obs = make_obs(blue_health=(1.0, 0.0, 0.0, 0.0))
+        env.opponent = FakeOpponent()
+
+        original_build_agent_observations = env_module.build_agent_observations
+        env_module.build_agent_observations = fake_build_agent_observations
+        try:
+            result = env.step(np.zeros((1, 3), dtype=np.float64))
+        finally:
+            env_module.build_agent_observations = original_build_agent_observations
+
+        score = terminal_score(
+            blue_alive=1,
+            red_alive=1,
+            episode_steps=1,
+            max_steps=1,
+            team_size=1,
+            opponent_team_size=2,
+        )
+        advantage = AUX_ALIVE_ADVANTAGE_REWARD_PER_STEP * (1.0 - 0.5)
+        expected = np.array([score + AUX_SURVIVAL_REWARD_PER_STEP + advantage], dtype=np.float32)
+        np.testing.assert_allclose(result.rewards, expected, atol=1e-6)
+        self.assertAlmostEqual(result.info["terminal_score"], score)
+        self.assertEqual(result.info["red_alive"], 1.0)
+
     def test_movement_distance_rewards_alive_in_bounds_blue_agents(self):
         previous_obs = make_obs(
             blue_health=(1.0, 1.0, 0.0, 1.0),
@@ -258,8 +296,10 @@ class FakeCore:
 
     def __init__(self, next_obs):
         self.next_obs = next_obs
+        self.last_kwargs = None
 
-    def BattlefieldEnv(self, **_kwargs):
+    def BattlefieldEnv(self, **kwargs):
+        self.last_kwargs = kwargs
         return FakeBattlefieldEnv(self.next_obs)
 
 

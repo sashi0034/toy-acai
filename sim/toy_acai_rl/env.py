@@ -18,8 +18,14 @@ AUX_KILL_REWARD = 1.0
 AUX_DEATH_PENALTY = 5.0
 # AUX_SURVIVAL_REWARD_PER_STEP = 0.0015 # 生存報酬は一旦無効化する。必要になったら再度有効化する。
 AUX_OUT_OF_BOUNDS_PENALTY_PER_STEP = 0.03
-AUX_INCOMING_MISSILE_PENALTY = 0.10
-AUX_INCOMING_MISSILE_RADIUS = 100.0
+# 自分を追跡していた敵ミサイルが消滅した瞬間に与える報酬。
+# ただし消滅直前に missile_closing > 0(まだ近づき続けていた)だったものは、
+# 単に lifetime 切れで運良く消えただけのケースとして除外する。
+AUX_EVASION_REWARD = 1.0
+# ミサイル age を使ってフレーム間で同一ミサイルを照合するときの許容誤差(秒)。
+# age は deltaTime ずつ単調増加するため、age_curr ≈ age_prev + dt の差分が
+# このしきい値以内なら同一ミサイルとみなす。
+MISSILE_AGE_MATCH_TOLERANCE = 0.05
 AUX_MISSILE_FIRE_REWARD = 0.03
 # AUX_MOVEMENT_REWARD_PER_DISTANCE = 0.10
 
@@ -335,6 +341,91 @@ def terminal_score(
     return float(-2.0 * red_alive_ratio + 0.2 * blue_alive_ratio)
 
 
+def _missile_closing(missile: np.ndarray, fighter: np.ndarray) -> float:
+    # build_agent_observations と同じ定義で「ミサイルが自機に近づいているか」を返す。
+    # > 0 なら接近中、<= 0 なら離脱中。
+    rel = missile[0:2] - fighter[2:4]
+    distance = math.hypot(float(rel[0]), float(rel[1]))
+    if distance <= 1e-6:
+        return 0.0
+    missile_yaw = float(missile[2])
+    missile_speed = float(missile[3])
+    missile_forward = np.array(
+        [math.cos(missile_yaw), math.sin(missile_yaw)], dtype=np.float64
+    )
+    fighter_yaw = float(fighter[4])
+    fighter_speed = float(fighter[5])
+    fighter_forward = np.array(
+        [math.cos(fighter_yaw), math.sin(fighter_yaw)], dtype=np.float64
+    )
+    rel_velocity = missile_forward * missile_speed - fighter_forward * fighter_speed
+    return -float(np.dot(rel, rel_velocity)) / (distance * MAX_SPEED)
+
+
+def _estimate_missile_dt(
+    prev_missiles: np.ndarray,
+    curr_missiles: np.ndarray,
+    default: float = MISSILE_AGE_MATCH_TOLERANCE,
+) -> float:
+    # 前後フレームで残存しているミサイル(同じ teamId, targetFighterIndex)の age 差から
+    # dt を推定する。シミュレータの deltaTime は一定なので、最小の正の age 差を使えば良い。
+    # マッチが取れない場合は default を返す。
+    if prev_missiles.shape[0] == 0 or curr_missiles.shape[0] == 0:
+        return float(default)
+    diffs = []
+    for prev in prev_missiles:
+        candidates = curr_missiles[
+            (curr_missiles[:, 6] == prev[6]) & (curr_missiles[:, 7] == prev[7])
+        ]
+        if candidates.shape[0] == 0:
+            continue
+        deltas = candidates[:, 4] - float(prev[4])
+        positive = deltas[deltas > 0]
+        if positive.size == 0:
+            continue
+        diffs.append(float(np.min(positive)))
+    if not diffs:
+        return float(default)
+    return float(np.median(diffs))
+
+
+def _match_disappeared_self_tracking_missiles(
+    prev_self_missiles: np.ndarray,
+    curr_self_missiles: np.ndarray,
+    dt: float,
+    tolerance: float = MISSILE_AGE_MATCH_TOLERANCE,
+) -> np.ndarray:
+    # 前ステップで自分を追跡していた敵ミサイルのうち、現ステップで対応が見つからない
+    # = 消滅したものだけを返す。
+    # ミサイルIDが無いため、同じ (team, target) 内で age_prev + dt に最も近い curr ミサイルを
+    # 同一ミサイルとみなし、許容誤差を超える場合は「対応なし=消滅」と判定する。
+    # curr 側は使用済みフラグで二重マッチを防ぐ。
+    if prev_self_missiles.shape[0] == 0:
+        return prev_self_missiles[:0]
+    if curr_self_missiles.shape[0] == 0:
+        return prev_self_missiles
+    used = np.zeros(curr_self_missiles.shape[0], dtype=bool)
+    disappeared_rows = []
+    for prev in prev_self_missiles:
+        target_age = float(prev[4]) + float(dt)
+        best_idx = -1
+        best_diff = float("inf")
+        for j, curr in enumerate(curr_self_missiles):
+            if used[j]:
+                continue
+            diff = abs(float(curr[4]) - target_age)
+            if diff < best_diff:
+                best_diff = diff
+                best_idx = j
+        if best_idx >= 0 and best_diff <= float(tolerance):
+            used[best_idx] = True
+        else:
+            disappeared_rows.append(prev)
+    if not disappeared_rows:
+        return prev_self_missiles[:0]
+    return np.asarray(disappeared_rows, dtype=np.float64)
+
+
 def auxiliary_agent_rewards(
     obs: Dict[str, np.ndarray],
     previous_obs: Optional[Dict[str, np.ndarray]] = None,
@@ -343,8 +434,7 @@ def auxiliary_agent_rewards(
     kill_reward: float = AUX_KILL_REWARD,
     death_penalty: float = AUX_DEATH_PENALTY,
     out_of_bounds_penalty_per_step: float = AUX_OUT_OF_BOUNDS_PENALTY_PER_STEP,
-    incoming_missile_penalty: float = AUX_INCOMING_MISSILE_PENALTY,
-    incoming_missile_radius: float = AUX_INCOMING_MISSILE_RADIUS,
+    evasion_reward: float = AUX_EVASION_REWARD,
     missile_fire_reward: float = AUX_MISSILE_FIRE_REWARD,
     # movement_reward_per_distance: float = AUX_MOVEMENT_REWARD_PER_DISTANCE,
     learner_count: Optional[int] = None,
@@ -378,45 +468,10 @@ def auxiliary_agent_rewards(
     rewards -= out_of_bounds_penalties.astype(np.float32)
     out_of_bounds_penalty_total = float(np.sum(out_of_bounds_penalties))
 
-    incoming_missile_penalty_total = 0.0
-    missile_radius = max(float(incoming_missile_radius), 1e-6)
     if missiles.ndim == 1:
         missiles = missiles.reshape((-1, 8))
-    enemy_missiles = (
-        missiles[missiles[:, 6] != float(learner_team)]
-        if len(missiles)
-        else missiles
-    )
-    for agent_idx, fighter_idx in enumerate(learner_indices):
-        if not alive[agent_idx]:
-            continue
-        fighter = fighters[int(fighter_idx)]
-        fighter_pos = fighter[2:4]
-        fighter_penalty = 0.0
-        for missile in enemy_missiles:
-            rel = missile[0:2] - fighter_pos
-            distance = math.hypot(float(rel[0]), float(rel[1]))
-            if distance <= 1e-6 or distance > missile_radius:
-                continue
-            missile_yaw = float(missile[2])
-            missile_forward = np.array(
-                [math.cos(missile_yaw), math.sin(missile_yaw)], dtype=np.float64
-            )
-            incoming_alignment = -float(np.dot(rel / distance, missile_forward))
-            targets_fighter = int(missile[7]) == int(fighter_idx)
-            if incoming_alignment <= 0.5 and not targets_fighter:
-                continue
-            near_factor = 1.0 - distance / missile_radius
-            incoming_factor = max(incoming_alignment, 0.5 if targets_fighter else 0.0)
-            fighter_penalty += (
-                float(incoming_missile_penalty)
-                * near_factor
-                * float(np.clip(incoming_factor, 0.0, 1.0))
-            )
-        if fighter_penalty > 0.0:
-            rewards[agent_idx] -= float(fighter_penalty)
-            incoming_missile_penalty_total += fighter_penalty
 
+    evasion_reward_total = 0.0
     movement_reward = 0.0
     mean_movement_distance = 0.0
     missile_fire_reward_total = 0.0
@@ -452,6 +507,43 @@ def auxiliary_agent_rewards(
         if np.any(movement_tracked):
             mean_movement_distance = float(np.mean(movement_distance[movement_tracked]))
 
+        # 自分追跡ミサイル(targetFighterIndex == 自機 & teamId != 学習チーム)が
+        # 消滅したフレームに報酬を与える。ただし消滅直前のフレームで
+        # missile_closing > 0(まだ自機に近づき続けていた)だったものは、
+        # 単に lifetime 切れで運良く消えただけのケースとして除外する。
+        prev_missiles = np.asarray(previous_obs["missiles"], dtype=np.float64)
+        if prev_missiles.ndim == 1:
+            prev_missiles = prev_missiles.reshape((-1, 8))
+        dt = _estimate_missile_dt(prev_missiles, missiles)
+        for agent_idx, fighter_idx in enumerate(learner_indices):
+            if not alive[agent_idx] or not previous_alive[agent_idx]:
+                continue
+            fighter_idx_int = int(fighter_idx)
+            prev_fighter = previous_fighters[fighter_idx_int]
+            if prev_missiles.shape[0] == 0:
+                continue
+            prev_self = prev_missiles[
+                (prev_missiles[:, 6] != float(learner_team))
+                & (prev_missiles[:, 7] == float(fighter_idx_int))
+            ]
+            if prev_self.shape[0] == 0:
+                continue
+            if missiles.shape[0] > 0:
+                curr_self = missiles[
+                    (missiles[:, 6] != float(learner_team))
+                    & (missiles[:, 7] == float(fighter_idx_int))
+                ]
+            else:
+                curr_self = missiles[:0]
+            disappeared = _match_disappeared_self_tracking_missiles(
+                prev_self, curr_self, dt
+            )
+            for missile in disappeared:
+                if _missile_closing(missile, prev_fighter) > 0.0:
+                    continue
+                rewards[agent_idx] += float(evasion_reward)
+                evasion_reward_total += float(evasion_reward)
+
     fighter_to_agent = {
         int(fighter_idx): agent_idx
         for agent_idx, fighter_idx in enumerate(learner_indices)
@@ -483,7 +575,7 @@ def auxiliary_agent_rewards(
     info = {
         "survival_reward": survival_reward,
         "out_of_bounds_penalty": out_of_bounds_penalty_total,
-        "incoming_missile_penalty": incoming_missile_penalty_total,
+        "evasion_reward": evasion_reward_total,
         "movement_reward": movement_reward,
         "mean_movement_distance": mean_movement_distance,
         "missile_fire_reward": missile_fire_reward_total,

@@ -37,7 +37,7 @@ EPISODE_INFO_METRICS = (
     "fire_input_rate",
     "reward_mean",
     "out_of_bounds_penalty",
-    "incoming_missile_penalty",
+    "evasion_reward",
     "movement_reward",
     "mean_movement_distance",
     "missile_fire_reward",

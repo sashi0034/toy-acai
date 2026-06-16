@@ -55,11 +55,12 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Train a PPO policy for the toy-acai simulator.")
     parser.add_argument("--episodes", type=int, default=200)
     parser.add_argument("--steps", type=int, default=1200)
-    parser.add_argument("--out-dir", type=Path, default=Path("outputs/rl/default"))
+    # --out-dir は学習結果の親ディレクトリで、実際の出力は内部に作る run_<timestamp> 以下になる。
+    # こうすることで、再実行しても過去の checkpoint/メトリクスを上書きしない。
+    parser.add_argument("--out-dir", type=Path, default=Path("outputs/rl"))
     parser.add_argument("--render-every", type=int, default=10)
     parser.add_argument("--checkpoint-every", type=int, default=10)
     parser.add_argument("--module-dir", type=Path, default=None)
-    parser.add_argument("--slack-spool", type=Path, default=None)
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--rollout-steps", type=int, default=512)
     parser.add_argument("--batch-size", type=int, default=128)
@@ -83,6 +84,34 @@ def write_jsonl(path: Path, data: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(data, sort_keys=True) + "\n")
+
+
+def make_run_dir(base_dir: Path) -> Path:
+    # 学習の起動ごとにユニークなディレクトリを切る。
+    # 1 秒以内に複数ジョブが立ち上がっても衝突しないように、必要なら連番でずらす。
+    base_dir.mkdir(parents=True, exist_ok=True)
+    timestamp = time.strftime("%Y%m%d_%H%M%S")
+    job_id = os.environ.get("SLURM_JOB_ID")
+    name = f"run_{timestamp}_{job_id}" if job_id else f"run_{timestamp}"
+    candidate = base_dir / name
+    counter = 1
+    while candidate.exists():
+        candidate = base_dir / f"{name}_{counter}"
+        counter += 1
+    candidate.mkdir(parents=True, exist_ok=False)
+    return candidate
+
+
+def update_latest_symlink(base_dir: Path, run_dir: Path) -> None:
+    # base_dir/latest を最新の run_dir に向け直す。
+    # slack uploader など外部プロセスはこの latest を参照する想定。
+    link_path = base_dir / "latest"
+    target = run_dir.name
+    tmp_link = base_dir / f".latest.{os.getpid()}.tmp"
+    if tmp_link.is_symlink() or tmp_link.exists():
+        tmp_link.unlink()
+    os.symlink(target, tmp_link)
+    os.replace(tmp_link, link_path)
 
 
 def make_spool_record(spool_root: Path, gif_path: Path, metrics: dict) -> None:
@@ -538,26 +567,23 @@ def evaluate(
     }
     add_episode_info_metrics(metrics, info)
     write_jsonl(args.out_dir / "eval_metrics.jsonl", metrics)
-    if args.slack_spool is not None:
-        make_spool_record(args.slack_spool, gif_path, metrics)
+    make_spool_record(args.slack_spool, gif_path, metrics)
     return metrics
 
 
 def main():
     args = parse_args()
     repo_root = Path(__file__).resolve().parents[1]
-    args.out_dir = args.out_dir.resolve()
-    args.out_dir.mkdir(parents=True, exist_ok=True)
+    base_out_dir = args.out_dir.resolve()
+    args.out_dir = make_run_dir(base_out_dir)
+    update_latest_symlink(base_out_dir, args.out_dir)
+    print(json.dumps({"run_dir": str(args.out_dir)}, sort_keys=True), flush=True)
     if args.module_dir is not None:
         args.module_dir = args.module_dir.resolve()
     if args.resume_checkpoint is not None:
         args.resume_checkpoint = args.resume_checkpoint.resolve()
-    if args.slack_spool is None:
-        args.slack_spool = args.out_dir / "slack"
-    elif not args.slack_spool.is_absolute():
-        args.slack_spool = (Path.cwd() / args.slack_spool).resolve()
-    if args.slack_spool is not None:
-        make_slack_thread_root_record(args.slack_spool, args, repo_root)
+    args.slack_spool = args.out_dir / "slack"
+    make_slack_thread_root_record(args.slack_spool, args, repo_root)
 
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
@@ -682,10 +708,7 @@ def main():
                 }
             )
             slack_update_post_count += 1
-            if (
-                args.slack_spool is not None
-                and slack_update_post_count % SLACK_REWARD_CHART_POST_INTERVAL == 0
-            ):
+            if slack_update_post_count % SLACK_REWARD_CHART_POST_INTERVAL == 0:
                 chart_path = args.out_dir / "media" / f"reward_chart_{episode:06d}.png"
                 make_reward_chart_image(
                     chart_path,

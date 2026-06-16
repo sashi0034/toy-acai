@@ -277,7 +277,9 @@ def main():
     load_dotenv(args.env_file)
     spool = args.spool
     if spool is None:
-        spool = Path(os.environ.get("TOY_ACAI_SLACK_SPOOL", "outputs/rl/default/slack"))
+        # 学習スクリプトは outputs/rl/latest -> outputs/rl/run_<timestamp> の symlink を更新するので、
+        # uploader 側はその latest を見れば最新ランの spool に追随できる。
+        spool = Path("outputs/rl/latest/slack")
     token = os.environ.get("SLACK_BOT_TOKEN")
     channel_id = os.environ.get("SLACK_CHANNEL_ID")
     if not args.dry_run and (not token or not channel_id):

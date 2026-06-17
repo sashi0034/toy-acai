@@ -118,7 +118,6 @@ def parse_args():
     parser.add_argument("--fire-bias-init", type=float, default=1.0)
     parser.add_argument("--log-std-init", type=float, default=-0.8)
     parser.add_argument("--hidden-dim", type=int, default=None)
-    parser.add_argument("--random-start-steps", type=int, default=120)
     parser.add_argument("--learner-count", type=int, default=int(os.environ.get("TOY_ACAI_LEARNER_COUNT", "1")))
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--resume-checkpoint", type=Path, default=None)
@@ -362,7 +361,7 @@ def make_slack_thread_root_record(spool_root: Path, args, repo_root: Path) -> No
         "comment": (
             "toy-acai PPO training started: "
             f"episodes={args.episodes}, steps={args.steps}, render_every={args.render_every}, "
-            f"random_start_steps={args.random_start_steps}"
+            "random_start_positions=True"
         ),
     }
     tmp_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
@@ -489,7 +488,7 @@ def make_train_env(toy_acai_core, args, opponent_count: int) -> ToyAcaiPPOEnv:
     return ToyAcaiPPOEnv(
         toy_acai_core,
         max_steps=args.steps,
-        random_start_steps=args.random_start_steps,
+        random_start_positions=True,
         learner_count=args.learner_count,
         opponent_count=opponent_count,
         rng=np.random.default_rng(args.seed),
@@ -511,7 +510,7 @@ def evaluate_curriculum(
         env = ToyAcaiPPOEnv(
             toy_acai_core,
             max_steps=args.steps,
-            random_start_steps=args.random_start_steps,
+            random_start_positions=True,
             learner_count=args.learner_count,
             opponent_count=opponent_count,
             rng=np.random.default_rng(args.seed + episode * 1000 + eval_index),
@@ -594,7 +593,7 @@ def evaluate(
         max_steps=args.steps,
         render=True,
         module_dir=module_dir,
-        random_start_steps=args.random_start_steps,
+        random_start_positions=True,
         learner_count=args.learner_count,
         opponent_count=CURRICULUM_STAGES[stage_index],
         rng=np.random.default_rng(args.seed + episode),

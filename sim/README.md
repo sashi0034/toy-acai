@@ -71,8 +71,7 @@ Slack 投稿が多すぎる場合は、まず `TOY_ACAI_RENDER_EVERY` を大き�
 これは「何エピソードごとに GIF を作って Slack 送信用にスプールするか」を決めます。
 例えば `TOY_ACAI_RENDER_EVERY=100` なら 100 エピソードごとに投稿候補が作られます。
 
-学習を固定初期配置の暗記に寄せすぎないため、`TOY_ACAI_RANDOM_START_STEPS` で reset 直後に短いランダム機動を入れます。
-また、`TOY_ACAI_ROLLOUT_STEPS` は小さめにすると PPO の更新頻度が上がります。
+`TOY_ACAI_ROLLOUT_STEPS` は小さめにすると PPO の更新頻度が上がります。
 
 生成済み GIF の数自体を減らしたい場合は `TOY_ACAI_RENDER_EVERY` を変更してください。
 

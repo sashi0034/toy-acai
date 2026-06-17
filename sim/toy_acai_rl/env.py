@@ -21,6 +21,12 @@ MISSILE_COLUMN_COUNT = 9
 MISSILE_TEAM_COLUMN = 6
 MISSILE_TARGET_COLUMN = 7
 MISSILE_ID_COLUMN = 8
+RANDOM_START_X_RANGES = {
+    TEAM_LEARN: (0.08, 0.32),
+    TEAM_RULE: (0.68, 0.92),
+}
+RANDOM_START_Y_RANGE = (0.12, 0.88)
+RANDOM_START_YAW_JITTER = 0.45
 
 # -----------------------------------------------
 
@@ -613,7 +619,7 @@ class ToyAcaiPPOEnv:
         render: bool = False,
         module_dir: Optional[Path] = None,
         render_interval: float = RENDER_INTERVAL,
-        random_start_steps: int = 0,
+        random_start_positions: bool = True,
         learner_count: Optional[int] = None,
         opponent_count: Optional[int] = None,
         rng: Optional[object] = None,
@@ -625,7 +631,7 @@ class ToyAcaiPPOEnv:
         self.render = render
         self.module_dir = module_dir
         self.render_interval = render_interval
-        self.random_start_steps = random_start_steps
+        self.random_start_positions = bool(random_start_positions)
         self.learner_count = self._clamp_learner_count(learner_count)
         self.opponent_count = self._clamp_learner_count(opponent_count)
         self.rng = rng if rng is not None else np.random.default_rng()
@@ -657,20 +663,71 @@ class ToyAcaiPPOEnv:
         # シミュレータを初期化し、生の状態ではなく学習用の観測ベクトルを返す。
         self.step_count = 0
         self.last_obs = self.env.reset()
-        self._apply_random_start()
+        self._apply_random_start_positions()
         return build_agent_observations(
             self.last_obs,
             active_learner_count=self.learner_count,
         )
 
-    def _apply_random_start(self) -> None:
-        # 毎回まったく同じ初期配置から始めると過学習しやすい。
-        # 数ステップだけランダムに動かして、開始状況にばらつきを作る。
-        for _ in range(max(0, self.random_start_steps)):
-            actions = np.zeros((self.core.FIGHTER_COUNT, 3), dtype=np.float64)
-            actions[:, 0] = self.rng.uniform(0.15, 0.9, size=self.core.FIGHTER_COUNT)
-            actions[:, 1] = self.rng.uniform(-1.0, 1.0, size=self.core.FIGHTER_COUNT)
-            self.last_obs = self.env.step(actions)
+    def _apply_random_start_positions(self) -> None:
+        if not self.random_start_positions:
+            return
+        if not hasattr(self.env, "set_fighter_poses"):
+            raise RuntimeError(
+                "toy_acai_core.BattlefieldEnv.set_fighter_poses is required for random start positions"
+            )
+        poses = self._sample_random_start_poses(self.last_obs)
+        self.last_obs = self.env.set_fighter_poses(poses)
+
+    def _sample_random_start_poses(self, obs: Dict[str, np.ndarray]) -> np.ndarray:
+        fighters = np.asarray(obs["fighters"], dtype=np.float64)
+        field_w = float(obs["battlefield"][2])
+        field_h = float(obs["battlefield"][3])
+        poses = np.ascontiguousarray(fighters[:, 2:5], dtype=np.float64)
+
+        for team_id, active_count in (
+            (TEAM_LEARN, self.learner_count),
+            (TEAM_RULE, self.opponent_count),
+        ):
+            indices = _team_indices(fighters, team_id, active_count)
+            team_poses = self._sample_team_start_poses(
+                team_id,
+                len(indices),
+                field_w,
+                field_h,
+            )
+            for pose, fighter_idx in zip(team_poses, indices):
+                poses[int(fighter_idx), :] = pose
+
+        return poses
+
+    def _sample_team_start_poses(
+        self,
+        team_id: int,
+        count: int,
+        field_w: float,
+        field_h: float,
+    ) -> np.ndarray:
+        if count <= 0:
+            return np.zeros((0, 3), dtype=np.float64)
+
+        x_low_frac, x_high_frac = RANDOM_START_X_RANGES[team_id]
+        y_low_frac, y_high_frac = RANDOM_START_Y_RANGE
+        xs = self.rng.uniform(x_low_frac * field_w, x_high_frac * field_w, size=count)
+
+        y_low = y_low_frac * field_h
+        y_high = y_high_frac * field_h
+        slot_height = (y_high - y_low) / count
+        slot_order = np.asarray(self.rng.permutation(count), dtype=np.float64)
+        ys = y_low + (slot_order + self.rng.uniform(0.2, 0.8, size=count)) * slot_height
+
+        base_yaw = 0.0 if team_id == TEAM_LEARN else math.pi
+        yaws = base_yaw + self.rng.uniform(
+            -RANDOM_START_YAW_JITTER,
+            RANDOM_START_YAW_JITTER,
+            size=count,
+        )
+        return np.stack([xs, ys, yaws], axis=1).astype(np.float64)
 
     def step(self, learner_actions: np.ndarray) -> StepResult:
         if self.last_obs is None:

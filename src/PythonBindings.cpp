@@ -26,6 +26,7 @@ using namespace nb::literals;
 namespace
 {
     using ActionArray = nb::ndarray<const double, nb::shape<toy_acai::FighterCount, 3>, nb::device::cpu, nb::c_contig>;
+    using FighterPoseArray = nb::ndarray<const double, nb::shape<toy_acai::FighterCount, 3>, nb::device::cpu, nb::c_contig>;
     using Matrix = nb::ndarray<nb::numpy, double, nb::ndim<2>>;
     using FrameArray = nb::ndarray<nb::numpy, std::uint8_t, nb::ndim<3>>;
 
@@ -359,6 +360,37 @@ namespace
             return observation();
         }
 
+        nb::dict setFighterPoses(FighterPoseArray poses)
+        {
+            assertRenderOwnerThread();
+
+            const auto& area = m_context.battlefieldArea;
+            for (size_t i = 0; i < toy_acai::FighterCount; ++i)
+            {
+                const double x = poses(i, 0);
+                const double y = poses(i, 1);
+                const double yaw = poses(i, 2);
+                if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(yaw))
+                {
+                    throw std::invalid_argument("fighter poses must contain finite x, y, and yaw values");
+                }
+                if (x < 0.0 || area.w < x || y < 0.0 || area.h < y)
+                {
+                    throw std::out_of_range("fighter pose positions must be inside the battlefield");
+                }
+            }
+
+            for (size_t i = 0; i < toy_acai::FighterCount; ++i)
+            {
+                auto& fighter = m_context.fighters[i];
+                fighter.position = s3d::Vec2{poses(i, 0), poses(i, 1)};
+                fighter.yaw = poses(i, 2);
+                fighter.outOfBoundsTime = 0.0;
+            }
+
+            return observation();
+        }
+
         nb::object takeRenderFrame()
         {
             if (!m_renderSession)
@@ -452,5 +484,6 @@ NB_MODULE(toy_acai_core, m)
         .def_prop_ro("render_interval", &BattlefieldEnv::renderInterval)
         .def("reset", &BattlefieldEnv::reset)
         .def("step", &BattlefieldEnv::step, "actions"_a)
+        .def("set_fighter_poses", &BattlefieldEnv::setFighterPoses, "poses"_a)
         .def("take_render_frame", &BattlefieldEnv::takeRenderFrame);
 }

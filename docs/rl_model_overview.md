@@ -15,13 +15,14 @@
 学習は以下のサイクルで進みます。
 
 1. `ToyAcaiPPOEnv.reset()` で C++ シミュレータを初期化する。
-2. C++ の生状態 `fighters` / `missiles` / `hit_events` を、`build_agent_observations()` でニューラルネット入力用の固定長ベクトルに変換する。
-3. `PPOTrainer.act()` が学習対象の Blue 機それぞれの行動を出す。
-4. 現在のカリキュラム段階で有効な Red 機は `RuleBasedOpponent` が最近傍の生存 Blue 機へ向かって旋回・射撃する。
-5. `ToyAcaiPPOEnv.step()` が Blue の行動と Red の行動をまとめて C++ シミュレータへ渡す。
-6. 次状態、各 Blue 機の報酬、終了判定を受け取る。
-7. 観測、行動、行動確率、報酬、価値推定を `RolloutBuffer` に蓄積する。
-8. `rollout_steps` 以上たまったら、GAE で advantage / return を計算し、PPO でネットワークを更新する。
+2. 学習開始位置をランダム化し、Blue は左側、Red は右側の範囲内で `x` / `y` / `yaw` を毎エピソード変える。
+3. C++ の生状態 `fighters` / `missiles` / `hit_events` を、`build_agent_observations()` でニューラルネット入力用の固定長ベクトルに変換する。
+4. `PPOTrainer.act()` が学習対象の Blue 機それぞれの行動を出す。
+5. 現在のカリキュラム段階で有効な Red 機は `RuleBasedOpponent` が最近傍の生存 Blue 機へ向かって旋回・射撃する。
+6. `ToyAcaiPPOEnv.step()` が Blue の行動と Red の行動をまとめて C++ シミュレータへ渡す。
+7. 次状態、各 Blue 機の報酬、終了判定を受け取る。
+8. 観測、行動、行動確率、報酬、価値推定を `RolloutBuffer` に蓄積する。
+9. `rollout_steps` 以上たまったら、GAE で advantage / return を計算し、PPO でネットワークを更新する。
 
 ## 学習対象と対戦相手
 
@@ -37,6 +38,12 @@ Red チームは `TEAM_RULE = 1` で、現在は学習せず、単純なルー�
 - 目標がいない場合や端に寄った場合は、戦場中心へ戻る向きに旋回する。
 
 つまり現状の学習は「固定ルールの Red に対して、Blue がどう動けば勝てるか」を学ぶ self-play ではない PPO です。
+
+## 開始位置ランダム化
+
+学習では、エピソードごとに `ToyAcaiPPOEnv.reset()` が C++ シミュレータを固定配置へ reset した直後、Python 側で active な Blue / Red 機の開始 pose をランダムに上書きします。
+
+Blue は戦場左側、Red は戦場右側の範囲から `x` を選びます。`y` は上下端を避けた範囲を active 機数ぶんのスロットに分け、同じチーム内の機体が開始直後に重なりにくいようにしています。`yaw` は Blue が概ね右向き、Red が概ね左向きになるようにしつつ、小さな jitter を入れます。
 
 ## カリキュラム学習
 

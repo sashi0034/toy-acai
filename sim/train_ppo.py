@@ -37,9 +37,11 @@ EPISODE_INFO_METRICS = (
     "fire_input_rate",
     "reward_mean",
     "out_of_bounds_penalty",
-    "evasion_reward",
-    "movement_reward",
-    "mean_movement_distance",
+    "missile_tracking_penalty",
+    "nearest_enemy_facing_reward",
+    "nearest_enemy_facing_penalty",
+    "low_movement_penalty",
+    "mean_movement_distance_1s",
     "missile_fire_reward",
     "kill_reward",
     "death_penalty",
@@ -51,12 +53,14 @@ EPISODE_INFO_METRICS = (
 # auxiliary_agent_rewards が step ごとに返す「その step だけの増分」を、
 # エピソード単位の累計に置き換えたいキー。
 # 最終 step の値だけを残すと、終了直前にたまたま発生していなかった成分は
-# 0 として記録されてしまい「ミサイル回避報酬が動いていない」ように見えてしまう。
+# 0 として記録されてしまい「連続報酬が動いていない」ように見えてしまう。
 EPISODE_CUMULATIVE_INFO_KEYS = (
     "survival_reward",
     "out_of_bounds_penalty",
-    "evasion_reward",
-    "movement_reward",
+    "missile_tracking_penalty",
+    "nearest_enemy_facing_reward",
+    "nearest_enemy_facing_penalty",
+    "low_movement_penalty",
     "missile_fire_reward",
     "kill_reward",
     "death_penalty",
@@ -71,26 +75,28 @@ class EpisodeInfoAggregator:
 
     def __init__(self):
         self._totals = {key: 0.0 for key in EPISODE_CUMULATIVE_INFO_KEYS}
-        self._mean_movement_sum = 0.0
-        self._mean_movement_steps = 0
+        self._mean_movement_1s_sum = 0.0
+        self._mean_movement_1s_steps = 0
 
     def add(self, info: dict) -> None:
         for key in EPISODE_CUMULATIVE_INFO_KEYS:
             self._totals[key] += float(info.get(key, 0.0))
-        self._mean_movement_sum += float(info.get("mean_movement_distance", 0.0))
-        self._mean_movement_steps += 1
+        self._mean_movement_1s_sum += float(
+            info.get("mean_movement_distance_1s", 0.0)
+        )
+        self._mean_movement_1s_steps += 1
 
     def apply(self, info: dict) -> dict:
         # 最終 step の info(終端スコアや勝敗のように「最後の値」が欲しいキー)を
         # ベースに、累積したいキーだけ上書きする。
         merged = dict(info)
         merged.update(self._totals)
-        if self._mean_movement_steps > 0:
-            merged["mean_movement_distance"] = (
-                self._mean_movement_sum / self._mean_movement_steps
+        if self._mean_movement_1s_steps > 0:
+            merged["mean_movement_distance_1s"] = (
+                self._mean_movement_1s_sum / self._mean_movement_1s_steps
             )
         else:
-            merged["mean_movement_distance"] = 0.0
+            merged["mean_movement_distance_1s"] = 0.0
         return merged
 
 

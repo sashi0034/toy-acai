@@ -11,9 +11,13 @@ sys.path.insert(0, str(REPO_ROOT / "sim"))
 import toy_acai_rl.env as env_module  # noqa: E402
 from toy_acai_rl.env import (  # noqa: E402
     AUX_DEATH_PENALTY,
-    AUX_EVASION_REWARD,
     AUX_KILL_REWARD,
+    AUX_LOW_MOVEMENT_DISTANCE_THRESHOLD,
+    AUX_LOW_MOVEMENT_PENALTY_PER_STEP,
+    AUX_MISSILE_TRACKING_PENALTY_DISTANCE_SCALE,
+    AUX_MISSILE_TRACKING_PENALTY_MAX_PER_STEP,
     AUX_MISSILE_FIRE_REWARD,
+    AUX_NEAREST_ENEMY_FACING_REWARD_PER_STEP,
     AUX_OUT_OF_BOUNDS_PENALTY_PER_STEP,
     TEAM_LEARN,
     TEAM_RULE,
@@ -28,7 +32,9 @@ def make_obs(
     red_health=(1.0, 1.0, 1.0, 1.0),
     hit_events=None,
     blue_positions=None,
+    blue_yaws=None,
     red_positions=None,
+    red_yaws=None,
     blue_cooldowns=None,
     blue_out_of_bounds_time=None,
     missiles=None,
@@ -43,11 +49,15 @@ def make_obs(
         fighters[:4, 8] = blue_out_of_bounds_time
     if blue_positions is not None:
         fighters[:4, 2:4] = np.asarray(blue_positions, dtype=np.float64)
+    if blue_yaws is not None:
+        fighters[:4, 4] = np.asarray(blue_yaws, dtype=np.float64)
     fighters[4:, 0] = TEAM_RULE
     fighters[4:, 1] = np.arange(4)
     fighters[4:, 6] = red_health
     if red_positions is not None:
         fighters[4:, 2:4] = np.asarray(red_positions, dtype=np.float64)
+    if red_yaws is not None:
+        fighters[4:, 4] = np.asarray(red_yaws, dtype=np.float64)
     if hit_events is None:
         hit_events = np.zeros((0, 4), dtype=np.float64)
     if missiles is None:
@@ -58,11 +68,6 @@ def make_obs(
         "hit_events": np.asarray(hit_events, dtype=np.float64),
         "battlefield": (0.0, 0.0, 1600.0, 900.0),
     }
-
-
-def movement_step_reward(distance):
-    return np.clip(distance / np.hypot(1600.0, 900.0), 0.0, 1.0) * 0.10
-
 
 def missile_row(
     *,
@@ -176,153 +181,158 @@ class AuxiliaryRewardsTest(unittest.TestCase):
         self.assertAlmostEqual(result.info["terminal_score"], score)
         self.assertEqual(result.info["red_alive"], 1.0)
 
-    def test_movement_distance_rewards_alive_in_bounds_blue_agents(self):
-        previous_obs = make_obs(
-            blue_health=(1.0, 1.0, 0.0, 1.0),
+    def test_missile_tracking_penalty_applies_when_enemy_missile_points_at_blue(self):
+        current_obs = make_obs(
+            red_health=(0.0, 0.0, 0.0, 0.0),
             blue_positions=[
                 [0.0, 0.0],
-                [100.0, 0.0],
-                [200.0, 0.0],
-                [300.0, 0.0],
-            ]
-        )
-        current_obs = make_obs(
-            blue_health=(1.0, 1.0, 0.0, 1.0),
-            blue_positions=[
-                [3.0, 4.0],
-                [100.0, 0.0],
-                [212.0, 0.0],
-                [300.0, 6.0],
+                [500.0, 300.0],
+                [500.0, 400.0],
+                [500.0, 500.0],
             ],
+            missiles=[missile_row(x=200.0, y=0.0, yaw=np.pi)],
         )
 
-        rewards, info = auxiliary_agent_rewards(current_obs, previous_obs=previous_obs)
+        rewards, info = auxiliary_agent_rewards(current_obs)
 
-        expected = np.array(
-            [
-                movement_step_reward(5.0),
-                0.0,
-                0.0,
-                movement_step_reward(6.0),
-            ],
-            dtype=np.float32,
-        )
+        expected = np.zeros((4,), dtype=np.float32)
+        expected[0] -= AUX_MISSILE_TRACKING_PENALTY_MAX_PER_STEP
         np.testing.assert_allclose(rewards, expected, atol=1e-8)
         self.assertAlmostEqual(
-            info["movement_reward"],
-            movement_step_reward(5.0) + movement_step_reward(6.0),
+            info["missile_tracking_penalty"],
+            AUX_MISSILE_TRACKING_PENALTY_MAX_PER_STEP,
         )
-        self.assertAlmostEqual(info["mean_movement_distance"], (5.0 + 0.0 + 6.0) / 3.0)
 
-    def test_movement_reward_skips_current_out_of_bounds_blue_agents(self):
-        previous_obs = make_obs()
+    def test_missile_tracking_penalty_scales_with_distance_and_ignores_friendly(self):
+        current_obs = make_obs(
+            red_health=(0.0, 0.0, 0.0, 0.0),
+            blue_positions=[
+                [0.0, 0.0],
+                [400.0, 400.0],
+                [500.0, 400.0],
+                [600.0, 400.0],
+            ],
+            missiles=[
+                missile_row(x=400.0, y=0.0, yaw=np.pi),
+                missile_row(x=200.0, y=0.0, yaw=np.pi, team=TEAM_LEARN),
+            ],
+        )
+
+        rewards, info = auxiliary_agent_rewards(current_obs)
+
+        expected_penalty = (
+            AUX_MISSILE_TRACKING_PENALTY_MAX_PER_STEP
+            * AUX_MISSILE_TRACKING_PENALTY_DISTANCE_SCALE
+            / 400.0
+        )
+        expected = np.zeros((4,), dtype=np.float32)
+        expected[0] -= expected_penalty
+        np.testing.assert_allclose(rewards, expected, atol=1e-8)
+        self.assertAlmostEqual(info["missile_tracking_penalty"], expected_penalty)
+
+    def test_missile_tracking_penalty_requires_missile_to_face_blue(self):
+        current_obs = make_obs(
+            red_health=(0.0, 0.0, 0.0, 0.0),
+            missiles=[missile_row(x=200.0, y=0.0, yaw=0.0)],
+        )
+
+        rewards, info = auxiliary_agent_rewards(current_obs)
+
+        np.testing.assert_allclose(rewards, np.zeros((4,), dtype=np.float32), atol=1e-8)
+        self.assertAlmostEqual(info["missile_tracking_penalty"], 0.0)
+
+    def test_nearest_enemy_facing_reward_and_penalty_use_same_amount(self):
         current_obs = make_obs(
             blue_positions=[
-                [3.0, 4.0],
-                [6.0, 8.0],
                 [0.0, 0.0],
-                [0.0, 0.0],
+                [0.0, 200.0],
+                [0.0, 300.0],
+                [0.0, 400.0],
             ],
-            blue_out_of_bounds_time=(0.25, 0.0, 0.0, 0.0),
+            blue_yaws=(0.0, 0.0, 0.0, 0.0),
+            red_positions=[
+                [100.0, 0.0],
+                [500.0, 0.0],
+                [500.0, 100.0],
+                [500.0, 200.0],
+            ],
+            red_yaws=(np.pi, 0.0, 0.0, 0.0),
         )
 
-        rewards, info = auxiliary_agent_rewards(current_obs, previous_obs=previous_obs)
+        rewards, info = auxiliary_agent_rewards(current_obs, learner_count=1)
 
-        expected = np.array(
+        np.testing.assert_allclose(rewards, np.array([0.0], dtype=np.float32), atol=1e-8)
+        self.assertAlmostEqual(
+            info["nearest_enemy_facing_reward"],
+            AUX_NEAREST_ENEMY_FACING_REWARD_PER_STEP,
+        )
+        self.assertAlmostEqual(
+            info["nearest_enemy_facing_penalty"],
+            AUX_NEAREST_ENEMY_FACING_REWARD_PER_STEP,
+        )
+
+    def test_nearest_enemy_facing_uses_closest_living_enemy_only(self):
+        current_obs = make_obs(
+            blue_positions=[
+                [0.0, 0.0],
+                [0.0, 200.0],
+                [0.0, 300.0],
+                [0.0, 400.0],
+            ],
+            blue_yaws=(0.0, 0.0, 0.0, 0.0),
+            red_positions=[
+                [0.0, 100.0],
+                [100.0, 0.0],
+                [500.0, 100.0],
+                [500.0, 200.0],
+            ],
+            red_yaws=(0.0, 0.0, 0.0, 0.0),
+        )
+
+        rewards, info = auxiliary_agent_rewards(current_obs, learner_count=1)
+
+        np.testing.assert_allclose(rewards, np.array([0.0], dtype=np.float32), atol=1e-8)
+        self.assertAlmostEqual(info["nearest_enemy_facing_reward"], 0.0)
+        self.assertAlmostEqual(info["nearest_enemy_facing_penalty"], 0.0)
+
+    def test_low_movement_penalty_applies_to_alive_in_bounds_agents(self):
+        current_obs = make_obs(
+            red_health=(0.0, 0.0, 0.0, 0.0),
+            blue_health=(1.0, 1.0, 0.0, 1.0),
+            blue_out_of_bounds_time=(0.0, 0.0, 0.0, 0.25),
+        )
+        distances = np.array(
             [
-                -AUX_OUT_OF_BOUNDS_PENALTY_PER_STEP,
-                movement_step_reward(10.0),
+                AUX_LOW_MOVEMENT_DISTANCE_THRESHOLD,
+                AUX_LOW_MOVEMENT_DISTANCE_THRESHOLD + 1.0,
                 0.0,
-                0.0,
+                10.0,
             ],
-            dtype=np.float32,
+            dtype=np.float64,
         )
+
+        rewards, info = auxiliary_agent_rewards(
+            current_obs,
+            low_movement_distances_1s=distances,
+        )
+
+        expected = np.zeros((4,), dtype=np.float32)
+        expected[0] -= AUX_LOW_MOVEMENT_PENALTY_PER_STEP
+        expected[3] -= AUX_OUT_OF_BOUNDS_PENALTY_PER_STEP
         np.testing.assert_allclose(rewards, expected, atol=1e-8)
         self.assertAlmostEqual(
-            info["out_of_bounds_penalty"],
-            AUX_OUT_OF_BOUNDS_PENALTY_PER_STEP,
+            info["low_movement_penalty"],
+            AUX_LOW_MOVEMENT_PENALTY_PER_STEP,
         )
-        self.assertAlmostEqual(info["movement_reward"], movement_step_reward(10.0))
-        self.assertAlmostEqual(info["mean_movement_distance"], (5.0 + 10.0 + 0.0 + 0.0) / 4.0)
-
-    def test_self_tracking_missile_disappearing_while_receding_rewards_target(self):
-        # 自機(blue 0, 原点)から離れる方向(yaw=0, +x へ進む)のミサイルが、
-        # 次ステップで消えた場合は「振り切れた」とみなして報酬を与える。
-        prev_missile = missile_row(missile_id=10.0)
-        previous_obs = make_obs(missiles=[prev_missile])
-        current_obs = make_obs(missiles=[])
-
-        rewards, info = auxiliary_agent_rewards(current_obs, previous_obs=previous_obs)
-
-        expected = np.zeros((4,), dtype=np.float32)
-        expected[0] += AUX_EVASION_REWARD
-        np.testing.assert_allclose(rewards, expected, atol=1e-8)
-        self.assertAlmostEqual(info["evasion_reward"], AUX_EVASION_REWARD)
-
-    def test_self_tracking_missile_disappearing_while_closing_gives_no_reward(self):
-        # 自機(blue 0, 原点)に向かって(yaw=pi, -x 方向)進むミサイルが消えても、
-        # まだ closing > 0 なので「lifetime 切れで運良く消えただけ」とみなして報酬を与えない。
-        prev_missile = missile_row(yaw=np.pi, missile_id=11.0)
-        previous_obs = make_obs(missiles=[prev_missile])
-        current_obs = make_obs(missiles=[])
-
-        rewards, info = auxiliary_agent_rewards(current_obs, previous_obs=previous_obs)
-
-        expected = np.zeros((4,), dtype=np.float32)
-        np.testing.assert_allclose(rewards, expected, atol=1e-8)
-        self.assertAlmostEqual(info["evasion_reward"], 0.0)
-
-    def test_persistent_self_tracking_missile_gives_no_evasion_reward(self):
-        # 同じ missileId が前後フレームに存在する場合は消滅とみなさない。
-        prev_missile = missile_row(x=100.0, age=0.5, missile_id=12.0)
-        curr_missile = missile_row(x=104.0, age=0.55, missile_id=12.0)
-        previous_obs = make_obs(missiles=[prev_missile])
-        current_obs = make_obs(missiles=[curr_missile])
-
-        rewards, info = auxiliary_agent_rewards(current_obs, previous_obs=previous_obs)
-
-        expected = np.zeros((4,), dtype=np.float32)
-        np.testing.assert_allclose(rewards, expected, atol=1e-8)
-        self.assertAlmostEqual(info["evasion_reward"], 0.0)
-
-    def test_evasion_matching_uses_missile_id_not_age(self):
-        # target と age が近くても missileId が異なるなら、前のミサイルは消滅扱いにする。
-        prev_missile = missile_row(x=100.0, age=0.5, missile_id=20.0)
-        curr_missile = missile_row(x=104.0, age=0.55, missile_id=21.0)
-        previous_obs = make_obs(missiles=[prev_missile])
-        current_obs = make_obs(missiles=[curr_missile])
-
-        rewards, info = auxiliary_agent_rewards(current_obs, previous_obs=previous_obs)
-
-        expected = np.zeros((4,), dtype=np.float32)
-        expected[0] += AUX_EVASION_REWARD
-        np.testing.assert_allclose(rewards, expected, atol=1e-8)
-        self.assertAlmostEqual(info["evasion_reward"], AUX_EVASION_REWARD)
-
-    def test_friendly_missile_disappearing_does_not_trigger_evasion_reward(self):
-        # 味方(TEAM_LEARN)が撃ったミサイルは「自分追跡の敵ミサイル」ではないので無視する。
-        prev_missile = missile_row(team=TEAM_LEARN, missile_id=13.0)
-        previous_obs = make_obs(missiles=[prev_missile])
-        current_obs = make_obs(missiles=[])
-
-        rewards, info = auxiliary_agent_rewards(current_obs, previous_obs=previous_obs)
-
-        expected = np.zeros((4,), dtype=np.float32)
-        np.testing.assert_allclose(rewards, expected, atol=1e-8)
-        self.assertAlmostEqual(info["evasion_reward"], 0.0)
-
-    def test_evasion_reward_only_goes_to_targeted_fighter(self):
-        # blue 1 を狙うミサイルが消えても、報酬は blue 1 だけに入る。
-        prev_missile = missile_row(target=1.0, missile_id=14.0)
-        previous_obs = make_obs(missiles=[prev_missile])
-        current_obs = make_obs(missiles=[])
-
-        rewards, info = auxiliary_agent_rewards(current_obs, previous_obs=previous_obs)
-
-        expected = np.zeros((4,), dtype=np.float32)
-        expected[1] += AUX_EVASION_REWARD
-        np.testing.assert_allclose(rewards, expected, atol=1e-8)
-        self.assertAlmostEqual(info["evasion_reward"], AUX_EVASION_REWARD)
+        self.assertAlmostEqual(
+            info["mean_movement_distance_1s"],
+            (
+                AUX_LOW_MOVEMENT_DISTANCE_THRESHOLD
+                + AUX_LOW_MOVEMENT_DISTANCE_THRESHOLD
+                + 1.0
+            )
+            / 2.0,
+        )
 
     def test_missile_fire_reward_uses_cooldown_increase(self):
         blue_positions = [
@@ -348,7 +358,11 @@ class AuxiliaryRewardsTest(unittest.TestCase):
             blue_cooldowns=(3.5, 1.4, 0.0, 3.5),
         )
 
-        rewards, info = auxiliary_agent_rewards(current_obs, previous_obs=previous_obs)
+        rewards, info = auxiliary_agent_rewards(
+            current_obs,
+            previous_obs=previous_obs,
+            nearest_enemy_facing_reward_per_step=0.0,
+        )
 
         expected = np.zeros((4,), dtype=np.float32)
         expected[0] += AUX_MISSILE_FIRE_REWARD
@@ -378,7 +392,11 @@ class AuxiliaryRewardsTest(unittest.TestCase):
             blue_cooldowns=(3.5, 0.0, 0.0, 0.0),
         )
 
-        rewards, info = auxiliary_agent_rewards(current_obs, previous_obs=previous_obs)
+        rewards, info = auxiliary_agent_rewards(
+            current_obs,
+            previous_obs=previous_obs,
+            nearest_enemy_facing_reward_per_step=0.0,
+        )
 
         np.testing.assert_allclose(rewards, np.zeros((4,), dtype=np.float32), atol=1e-8)
         self.assertAlmostEqual(info["missile_fire_reward"], 0.0)

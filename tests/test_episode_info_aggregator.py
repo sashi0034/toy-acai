@@ -20,13 +20,13 @@ if HAS_TORCH:
 class EpisodeInfoAggregatorTest(unittest.TestCase):
     def test_cumulative_keys_are_summed_across_steps(self):
         aggregator = train_ppo.EpisodeInfoAggregator()
-        aggregator.add({"evasion_reward": 1.0, "kill_reward": 10.0})
-        aggregator.add({"evasion_reward": 1.0})
+        aggregator.add({"missile_tracking_penalty": 1.0, "kill_reward": 10.0})
+        aggregator.add({"missile_tracking_penalty": 1.0})
         aggregator.add({"missile_fire_reward": 0.5})
 
         merged = aggregator.apply({"terminal_score": -2.0})
 
-        self.assertAlmostEqual(merged["evasion_reward"], 2.0)
+        self.assertAlmostEqual(merged["missile_tracking_penalty"], 2.0)
         self.assertAlmostEqual(merged["kill_reward"], 10.0)
         self.assertAlmostEqual(merged["missile_fire_reward"], 0.5)
         self.assertAlmostEqual(merged["death_penalty"], 0.0)
@@ -34,32 +34,34 @@ class EpisodeInfoAggregatorTest(unittest.TestCase):
 
     def test_apply_overrides_last_step_cumulative_keys(self):
         aggregator = train_ppo.EpisodeInfoAggregator()
-        aggregator.add({"evasion_reward": 1.0})
-        aggregator.add({"evasion_reward": 0.0, "death_penalty": 20.0})
+        aggregator.add({"missile_tracking_penalty": 1.0})
+        aggregator.add({"missile_tracking_penalty": 0.0, "death_penalty": 20.0})
 
-        merged = aggregator.apply({"evasion_reward": 0.0, "death_penalty": 20.0})
+        merged = aggregator.apply(
+            {"missile_tracking_penalty": 0.0, "death_penalty": 20.0}
+        )
 
-        # 最終 step だけが残ると evasion_reward は 0 に見えてしまうが、
+        # 最終 step だけが残ると missile_tracking_penalty は 0 に見えてしまうが、
         # アグリゲータがエピソード合計で上書きする。
-        self.assertAlmostEqual(merged["evasion_reward"], 1.0)
+        self.assertAlmostEqual(merged["missile_tracking_penalty"], 1.0)
         self.assertAlmostEqual(merged["death_penalty"], 20.0)
 
-    def test_mean_movement_distance_is_averaged_over_steps(self):
+    def test_mean_movement_distance_1s_is_averaged_over_steps(self):
         aggregator = train_ppo.EpisodeInfoAggregator()
-        aggregator.add({"mean_movement_distance": 2.0})
-        aggregator.add({"mean_movement_distance": 4.0})
-        aggregator.add({"mean_movement_distance": 0.0})
+        aggregator.add({"mean_movement_distance_1s": 2.0})
+        aggregator.add({"mean_movement_distance_1s": 4.0})
+        aggregator.add({"mean_movement_distance_1s": 0.0})
 
         merged = aggregator.apply({})
 
-        self.assertAlmostEqual(merged["mean_movement_distance"], (2.0 + 4.0 + 0.0) / 3.0)
+        self.assertAlmostEqual(merged["mean_movement_distance_1s"], (2.0 + 4.0 + 0.0) / 3.0)
 
-    def test_mean_movement_distance_zero_when_no_steps_recorded(self):
+    def test_mean_movement_distance_1s_zero_when_no_steps_recorded(self):
         aggregator = train_ppo.EpisodeInfoAggregator()
 
-        merged = aggregator.apply({"mean_movement_distance": 1.5})
+        merged = aggregator.apply({"mean_movement_distance_1s": 1.5})
 
-        self.assertAlmostEqual(merged["mean_movement_distance"], 0.0)
+        self.assertAlmostEqual(merged["mean_movement_distance_1s"], 0.0)
 
 
 @unittest.skipUnless(HAS_TORCH, "torch is required")
@@ -109,12 +111,14 @@ class RunEpisodeAggregationTest(unittest.TestCase):
         # 3 step ぶんの補助報酬が、最後の step に依存せず合計として記録されることを確認する。
         step_infos = [
             {
-                "evasion_reward": 1.0,
+                "missile_tracking_penalty": 1.0,
+                "nearest_enemy_facing_reward": 0.2,
+                "nearest_enemy_facing_penalty": 0.1,
+                "low_movement_penalty": 0.0,
                 "missile_fire_reward": 0.5,
                 "kill_reward": 0.0,
                 "death_penalty": 0.0,
-                "movement_reward": 0.1,
-                "mean_movement_distance": 5.0,
+                "mean_movement_distance_1s": 5.0,
                 "out_of_bounds_penalty": 0.0,
                 "blue_kills": 0.0,
                 "blue_losses": 0.0,
@@ -125,12 +129,14 @@ class RunEpisodeAggregationTest(unittest.TestCase):
                 "reward_mean": 1.6,
             },
             {
-                "evasion_reward": 0.0,
+                "missile_tracking_penalty": 0.0,
+                "nearest_enemy_facing_reward": 0.0,
+                "nearest_enemy_facing_penalty": 0.3,
+                "low_movement_penalty": 0.2,
                 "missile_fire_reward": 0.0,
                 "kill_reward": 10.0,
                 "death_penalty": 0.0,
-                "movement_reward": 0.2,
-                "mean_movement_distance": 6.0,
+                "mean_movement_distance_1s": 6.0,
                 "out_of_bounds_penalty": 0.0,
                 "blue_kills": 1.0,
                 "blue_losses": 0.0,
@@ -141,12 +147,14 @@ class RunEpisodeAggregationTest(unittest.TestCase):
                 "reward_mean": 10.2,
             },
             {
-                "evasion_reward": 0.0,
+                "missile_tracking_penalty": 0.0,
+                "nearest_enemy_facing_reward": 0.1,
+                "nearest_enemy_facing_penalty": 0.0,
+                "low_movement_penalty": 0.0,
                 "missile_fire_reward": 0.0,
                 "kill_reward": 0.0,
                 "death_penalty": 20.0,
-                "movement_reward": 0.0,
-                "mean_movement_distance": 0.0,
+                "mean_movement_distance_1s": 0.0,
                 "out_of_bounds_penalty": 0.0,
                 "blue_kills": 0.0,
                 "blue_losses": 1.0,
@@ -164,15 +172,17 @@ class RunEpisodeAggregationTest(unittest.TestCase):
         _, total_reward, info = train_ppo.run_episode(env, trainer, buffer=None)
 
         # エピソード合計の補助報酬が現れる。
-        self.assertAlmostEqual(info["evasion_reward"], 1.0)
+        self.assertAlmostEqual(info["missile_tracking_penalty"], 1.0)
+        self.assertAlmostEqual(info["nearest_enemy_facing_reward"], 0.2 + 0.1)
+        self.assertAlmostEqual(info["nearest_enemy_facing_penalty"], 0.1 + 0.3)
+        self.assertAlmostEqual(info["low_movement_penalty"], 0.2)
         self.assertAlmostEqual(info["missile_fire_reward"], 0.5)
         self.assertAlmostEqual(info["kill_reward"], 10.0)
         self.assertAlmostEqual(info["death_penalty"], 20.0)
-        self.assertAlmostEqual(info["movement_reward"], 0.1 + 0.2)
         self.assertAlmostEqual(info["blue_kills"], 1.0)
         self.assertAlmostEqual(info["blue_losses"], 1.0)
         self.assertAlmostEqual(info["hit_events"], 2.0)
-        self.assertAlmostEqual(info["mean_movement_distance"], (5.0 + 6.0 + 0.0) / 3.0)
+        self.assertAlmostEqual(info["mean_movement_distance_1s"], (5.0 + 6.0 + 0.0) / 3.0)
         # 終端値はそのまま最後の step の値が残る。
         self.assertAlmostEqual(info["terminal_score"], -2.0)
         self.assertAlmostEqual(info["outcome"], -1.0)

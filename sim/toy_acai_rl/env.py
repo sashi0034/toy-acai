@@ -14,24 +14,32 @@ TEAM_RULE = 1
 MAX_TRACKED_MISSILES = 8
 MISSILE_OBS_FEATURES = 7
 MAX_SPEED = 360.0
-SEEKER_HALF_ANGLE = 0.85
 RENDER_INTERVAL = 0.1
+
+SIMULATION_STEPS_PER_SECOND = 60
 
 MISSILE_COLUMN_COUNT = 9
 MISSILE_TEAM_COLUMN = 6
-MISSILE_TARGET_COLUMN = 7
-MISSILE_ID_COLUMN = 8
-RANDOM_START_X_RANGE = (0.08, 0.92)
-RANDOM_START_Y_RANGE = (0.12, 0.88)
-RANDOM_START_YAW_JITTER = 0.45
+
+SEEKER_HALF_ANGLE = 0.85
 
 # -----------------------------------------------
+
+RANDOM_START_X_RANGE = (0.08, 0.92)
+RANDOM_START_Y_RANGE = (0.12, 0.88)
+
+RANDOM_START_YAW_JITTER = 0.45
+LOW_MOVEMENT_WINDOW_STEPS = SIMULATION_STEPS_PER_SECOND
 
 AUX_KILL_REWARD = 10.0
 AUX_DEATH_PENALTY = 10.0
 # AUX_SURVIVAL_REWARD_PER_STEP = 0.0015 # 生存報酬は一旦無効化する。必要になったら再度有効化する。
-AUX_OUT_OF_BOUNDS_PENALTY_PER_STEP = 0.03
-AUX_EVASION_REWARD = 1.0
+AUX_OUT_OF_BOUNDS_PENALTY_PER_STEP = 0.01
+AUX_MISSILE_TRACKING_PENALTY_MAX_PER_STEP = 0.05
+AUX_MISSILE_TRACKING_PENALTY_DISTANCE_SCALE = 200.0
+AUX_NEAREST_ENEMY_FACING_REWARD_PER_STEP = 0.02
+AUX_LOW_MOVEMENT_PENALTY_PER_STEP = 0.02
+AUX_LOW_MOVEMENT_DISTANCE_THRESHOLD = 100.0
 AUX_MISSILE_FIRE_REWARD = 1.0
 
 # -----------------------------------------------
@@ -346,25 +354,58 @@ def terminal_score(
     return float(-2.0 * red_alive_ratio + 0.2 * blue_alive_ratio)
 
 
-def _missile_closing(missile: np.ndarray, fighter: np.ndarray) -> float:
-    # build_agent_observations と同じ定義で「ミサイルが自機に近づいているか」を返す。
-    # > 0 なら接近中、<= 0 なら離脱中。
-    rel = missile[0:2] - fighter[2:4]
+def _is_facing_position(
+    fighter: np.ndarray,
+    target_position: np.ndarray,
+    half_angle: float = SEEKER_HALF_ANGLE,
+) -> bool:
+    rel = target_position - fighter[2:4]
     distance = math.hypot(float(rel[0]), float(rel[1]))
     if distance <= 1e-6:
+        return False
+    bearing = math.atan2(float(rel[1]), float(rel[0]))
+    return abs(_angle_delta(bearing, float(fighter[4]))) <= half_angle
+
+
+def _nearest_living_opponent_index(
+    fighter: np.ndarray,
+    fighters: np.ndarray,
+    opponent_team: int,
+) -> Optional[int]:
+    opponent_indices = np.where(
+        (fighters[:, 0] == float(opponent_team)) & (fighters[:, 6] > 0.0)
+    )[0]
+    nearest_idx = None
+    nearest_distance_sq = math.inf
+    for opponent_idx in opponent_indices:
+        rel = fighters[opponent_idx, 2:4] - fighter[2:4]
+        distance_sq = float(np.dot(rel, rel))
+        if distance_sq <= 1e-12 or nearest_distance_sq <= distance_sq:
+            continue
+        nearest_distance_sq = distance_sq
+        nearest_idx = int(opponent_idx)
+    return nearest_idx
+
+
+def _missile_tracking_penalty(
+    missile: np.ndarray,
+    fighter: np.ndarray,
+    *,
+    max_penalty: float,
+    distance_scale: float,
+) -> float:
+    rel = fighter[2:4] - missile[0:2]
+    distance = math.hypot(float(rel[0]), float(rel[1]))
+    if distance <= 1e-6:
+        return float(max_penalty)
+    target_yaw = math.atan2(float(rel[1]), float(rel[0]))
+    if abs(_angle_delta(target_yaw, float(missile[2]))) > SEEKER_HALF_ANGLE:
         return 0.0
-    missile_yaw = float(missile[2])
-    missile_speed = float(missile[3])
-    missile_forward = np.array(
-        [math.cos(missile_yaw), math.sin(missile_yaw)], dtype=np.float64
+    raw_penalty = float(max_penalty) * float(distance_scale) / max(
+        distance,
+        float(distance_scale),
     )
-    fighter_yaw = float(fighter[4])
-    fighter_speed = float(fighter[5])
-    fighter_forward = np.array(
-        [math.cos(fighter_yaw), math.sin(fighter_yaw)], dtype=np.float64
-    )
-    rel_velocity = missile_forward * missile_speed - fighter_forward * fighter_speed
-    return -float(np.dot(rel, rel_velocity)) / (distance * MAX_SPEED)
+    return float(np.clip(raw_penalty, 0.0, float(max_penalty)))
 
 
 def _has_living_opponent_in_fire_arc(
@@ -389,28 +430,6 @@ def _has_living_opponent_in_fire_arc(
     return False
 
 
-def _match_disappeared_self_tracking_missiles(
-    prev_self_missiles: np.ndarray,
-    curr_self_missiles: np.ndarray,
-) -> np.ndarray:
-    # 前ステップで自分を追跡していた敵ミサイルのうち、現ステップで対応が見つからない
-    # = 消滅したものだけを返す。
-    # C++ 側で採番した missileId を使うため、age の近さによる曖昧な照合は不要。
-    if prev_self_missiles.shape[0] == 0:
-        return prev_self_missiles[:0]
-    if curr_self_missiles.shape[0] == 0:
-        return prev_self_missiles
-    curr_ids = {int(missile[MISSILE_ID_COLUMN]) for missile in curr_self_missiles}
-    disappeared = [
-        missile
-        for missile in prev_self_missiles
-        if int(missile[MISSILE_ID_COLUMN]) not in curr_ids
-    ]
-    if not disappeared:
-        return prev_self_missiles[:0]
-    return np.asarray(disappeared, dtype=np.float64)
-
-
 def auxiliary_agent_rewards(
     obs: Dict[str, np.ndarray],
     previous_obs: Optional[Dict[str, np.ndarray]] = None,
@@ -419,13 +438,23 @@ def auxiliary_agent_rewards(
     kill_reward: float = AUX_KILL_REWARD,
     death_penalty: float = AUX_DEATH_PENALTY,
     out_of_bounds_penalty_per_step: float = AUX_OUT_OF_BOUNDS_PENALTY_PER_STEP,
-    evasion_reward: float = AUX_EVASION_REWARD,
+    missile_tracking_penalty_max_per_step: float = (
+        AUX_MISSILE_TRACKING_PENALTY_MAX_PER_STEP
+    ),
+    missile_tracking_penalty_distance_scale: float = (
+        AUX_MISSILE_TRACKING_PENALTY_DISTANCE_SCALE
+    ),
+    nearest_enemy_facing_reward_per_step: float = (
+        AUX_NEAREST_ENEMY_FACING_REWARD_PER_STEP
+    ),
+    low_movement_penalty_per_step: float = AUX_LOW_MOVEMENT_PENALTY_PER_STEP,
+    low_movement_distance_threshold: float = AUX_LOW_MOVEMENT_DISTANCE_THRESHOLD,
     missile_fire_reward: float = AUX_MISSILE_FIRE_REWARD,
-    # movement_reward_per_distance: float = AUX_MOVEMENT_REWARD_PER_DISTANCE,
+    low_movement_distances_1s: Optional[np.ndarray] = None,
     learner_count: Optional[int] = None,
 ) -> Tuple[np.ndarray, Dict[str, float]]:
     # 毎ステップ与える補助報酬。終端報酬だけだと「何が良かったか」が遠すぎるため、
-    # 場外・ミサイル・撃墜・損失を小さな手がかりとして追加して学習を助ける。
+    # 場外・角度関係・撃墜・損失を小さな手がかりとして追加して学習を助ける。
     fighters = np.asarray(obs["fighters"], dtype=np.float64)
     missiles = np.asarray(obs["missiles"], dtype=np.float64)
     hit_events = np.asarray(
@@ -456,10 +485,78 @@ def auxiliary_agent_rewards(
     if missiles.ndim == 1:
         missiles = missiles.reshape((-1, MISSILE_COLUMN_COUNT))
 
-    evasion_reward_total = 0.0
-    movement_reward = 0.0
-    mean_movement_distance = 0.0
+    missile_tracking_penalty_total = 0.0
+    nearest_enemy_facing_reward_total = 0.0
+    nearest_enemy_facing_penalty_total = 0.0
+    low_movement_penalty_total = 0.0
+    mean_movement_distance_1s = 0.0
     missile_fire_reward_total = 0.0
+    opponent_indices = np.where(
+        (fighters[:, 0] == float(opponent_team)) & (fighters[:, 6] > 0.0)
+    )[0]
+
+    for agent_idx, fighter_idx in enumerate(learner_indices):
+        if not alive[agent_idx]:
+            continue
+        fighter = fighters[int(fighter_idx)]
+        for missile in missiles:
+            if int(missile[MISSILE_TEAM_COLUMN]) == learner_team:
+                continue
+            penalty = _missile_tracking_penalty(
+                missile,
+                fighter,
+                max_penalty=missile_tracking_penalty_max_per_step,
+                distance_scale=missile_tracking_penalty_distance_scale,
+            )
+            if penalty <= 0.0:
+                continue
+            rewards[agent_idx] -= np.float32(penalty)
+            missile_tracking_penalty_total += penalty
+
+        if opponent_indices.shape[0] == 0:
+            continue
+        nearest_opponent_idx = _nearest_living_opponent_index(
+            fighter,
+            fighters,
+            opponent_team,
+        )
+        if nearest_opponent_idx is None:
+            continue
+        nearest_opponent = fighters[nearest_opponent_idx]
+        facing_amount = float(nearest_enemy_facing_reward_per_step)
+        if _is_facing_position(fighter, nearest_opponent[2:4]):
+            rewards[agent_idx] += np.float32(facing_amount)
+            nearest_enemy_facing_reward_total += facing_amount
+        if _is_facing_position(nearest_opponent, fighter[2:4]):
+            rewards[agent_idx] -= np.float32(facing_amount)
+            nearest_enemy_facing_penalty_total += facing_amount
+
+    if low_movement_distances_1s is not None:
+        movement_distances_1s = np.asarray(
+            low_movement_distances_1s,
+            dtype=np.float64,
+        ).reshape((-1,))
+        if movement_distances_1s.shape[0] < len(learner_indices):
+            padded = np.full((len(learner_indices),), np.nan, dtype=np.float64)
+            padded[: movement_distances_1s.shape[0]] = movement_distances_1s
+            movement_distances_1s = padded
+        else:
+            movement_distances_1s = movement_distances_1s[: len(learner_indices)]
+        valid_movement = np.isfinite(movement_distances_1s)
+        movement_eligible = alive & in_bounds & valid_movement
+        low_movement = movement_eligible & (
+            movement_distances_1s <= float(low_movement_distance_threshold)
+        )
+        low_movement_penalties = low_movement.astype(np.float64) * float(
+            low_movement_penalty_per_step
+        )
+        rewards -= low_movement_penalties.astype(np.float32)
+        low_movement_penalty_total = float(np.sum(low_movement_penalties))
+        if np.any(movement_eligible):
+            mean_movement_distance_1s = float(
+                np.mean(movement_distances_1s[movement_eligible])
+            )
+
     if previous_obs is not None:
         previous_fighters = np.asarray(previous_obs["fighters"], dtype=np.float64)
         previous_alive = previous_fighters[learner_indices, 6] > 0.0
@@ -485,60 +582,6 @@ def auxiliary_agent_rewards(
         fire_rewards = launched.astype(np.float64) * float(missile_fire_reward)
         rewards += fire_rewards.astype(np.float32)
         missile_fire_reward_total = float(np.sum(fire_rewards))
-
-        movement_tracked = alive & previous_alive
-        movement_eligible = movement_tracked & in_bounds
-        movement_distance = np.linalg.norm(
-            fighters[learner_indices, 2:4] - previous_fighters[learner_indices, 2:4],
-            axis=1,
-        )
-        # ノロノロ対策として、戦場内で実際に移動した距離をごく小さく加点する。
-        field_w = float(obs["battlefield"][2])
-        field_h = float(obs["battlefield"][3])
-        reward_distance = max(math.hypot(field_w, field_h), 1e-6)
-        clipped_movement = np.clip(movement_distance / reward_distance, 0.0, 1.0)
-        movement_rewards = clipped_movement * 0.10
-        movement_rewards[~movement_eligible] = 0.0
-        rewards += movement_rewards.astype(np.float32)
-        movement_reward = float(np.sum(movement_rewards))
-        if np.any(movement_tracked):
-            mean_movement_distance = float(np.mean(movement_distance[movement_tracked]))
-
-        # 自分追跡ミサイル(targetFighterIndex == 自機 & teamId != 学習チーム)が
-        # 消滅したフレームに報酬を与える。ただし消滅直前のフレームで
-        # missile_closing > 0(まだ自機に近づき続けていた)だったものは、
-        # 単に lifetime 切れで運良く消えただけのケースとして除外する。
-        prev_missiles = np.asarray(previous_obs["missiles"], dtype=np.float64)
-        if prev_missiles.ndim == 1:
-            prev_missiles = prev_missiles.reshape((-1, MISSILE_COLUMN_COUNT))
-        for agent_idx, fighter_idx in enumerate(learner_indices):
-            if not alive[agent_idx] or not previous_alive[agent_idx]:
-                continue
-            fighter_idx_int = int(fighter_idx)
-            prev_fighter = previous_fighters[fighter_idx_int]
-            if prev_missiles.shape[0] == 0:
-                continue
-            prev_self = prev_missiles[
-                (prev_missiles[:, MISSILE_TEAM_COLUMN] != float(learner_team))
-                & (prev_missiles[:, MISSILE_TARGET_COLUMN] == float(fighter_idx_int))
-            ]
-            if prev_self.shape[0] == 0:
-                continue
-            if missiles.shape[0] > 0:
-                curr_self = missiles[
-                    (missiles[:, MISSILE_TEAM_COLUMN] != float(learner_team))
-                    & (missiles[:, MISSILE_TARGET_COLUMN] == float(fighter_idx_int))
-                ]
-            else:
-                curr_self = missiles[:0]
-            disappeared = _match_disappeared_self_tracking_missiles(
-                prev_self, curr_self
-            )
-            for missile in disappeared:
-                if _missile_closing(missile, prev_fighter) > 0.0:
-                    continue
-                rewards[agent_idx] += float(evasion_reward)
-                evasion_reward_total += float(evasion_reward)
 
     fighter_to_agent = {
         int(fighter_idx): agent_idx
@@ -578,9 +621,11 @@ def auxiliary_agent_rewards(
     info = {
         "survival_reward": survival_reward,
         "out_of_bounds_penalty": out_of_bounds_penalty_total,
-        "evasion_reward": evasion_reward_total,
-        "movement_reward": movement_reward,
-        "mean_movement_distance": mean_movement_distance,
+        "missile_tracking_penalty": missile_tracking_penalty_total,
+        "nearest_enemy_facing_reward": nearest_enemy_facing_reward_total,
+        "nearest_enemy_facing_penalty": nearest_enemy_facing_penalty_total,
+        "low_movement_penalty": low_movement_penalty_total,
+        "mean_movement_distance_1s": mean_movement_distance_1s,
         "missile_fire_reward": missile_fire_reward_total,
         "kill_reward": kill_reward_total,
         "death_penalty": death_penalty_total,
@@ -635,6 +680,7 @@ class ToyAcaiPPOEnv:
         self.rng = rng if rng is not None else np.random.default_rng()
         self.env = self._make_env()
         self.last_obs = None
+        self._learner_position_history = []
 
     def _clamp_learner_count(self, learner_count: Optional[int]) -> int:
         team_count = int(self.core.TEAM_FIGHTER_COUNT)
@@ -662,6 +708,7 @@ class ToyAcaiPPOEnv:
         self.step_count = 0
         self.last_obs = self.env.reset()
         self._apply_random_start_positions()
+        self._reset_movement_history()
         return build_agent_observations(
             self.last_obs,
             active_learner_count=self.learner_count,
@@ -747,6 +794,7 @@ class ToyAcaiPPOEnv:
 
         next_obs = self.env.step(actions)
         self.step_count += 1
+        low_movement_distances_1s = self._record_learner_positions(next_obs)
 
         # 終了条件は「どちらかが全滅」または「最大ステップ到達」。
         fighters = np.asarray(next_obs["fighters"], dtype=np.float64)
@@ -758,6 +806,7 @@ class ToyAcaiPPOEnv:
         agent_rewards, auxiliary_info = auxiliary_agent_rewards(
             next_obs,
             previous_obs=self.last_obs,
+            low_movement_distances_1s=low_movement_distances_1s,
             learner_count=self.learner_count,
         )
         info = {
@@ -799,6 +848,26 @@ class ToyAcaiPPOEnv:
         if not self.render or not hasattr(self.env, "take_render_frame"):
             return None
         return self.env.take_render_frame()
+
+    def _current_learner_positions(self, obs: Dict[str, np.ndarray]) -> np.ndarray:
+        fighters = np.asarray(obs["fighters"], dtype=np.float64)
+        learner_indices = _team_indices(fighters, TEAM_LEARN, self.learner_count)
+        return np.asarray(fighters[learner_indices, 2:4], dtype=np.float64).copy()
+
+    def _reset_movement_history(self) -> None:
+        self._learner_position_history = [self._current_learner_positions(self.last_obs)]
+
+    def _record_learner_positions(self, obs: Dict[str, np.ndarray]) -> Optional[np.ndarray]:
+        self._learner_position_history.append(self._current_learner_positions(obs))
+        max_history = LOW_MOVEMENT_WINDOW_STEPS + 1
+        if len(self._learner_position_history) > max_history:
+            self._learner_position_history = self._learner_position_history[-max_history:]
+        if len(self._learner_position_history) < max_history:
+            return None
+        return np.linalg.norm(
+            self._learner_position_history[-1] - self._learner_position_history[0],
+            axis=1,
+        )
 
     @staticmethod
     def _team_alive(

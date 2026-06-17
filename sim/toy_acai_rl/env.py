@@ -27,6 +27,8 @@ SEEKER_HALF_ANGLE = 0.85
 
 RANDOM_START_X_RANGE = (0.08, 0.92)
 RANDOM_START_Y_RANGE = (0.12, 0.88)
+MIN_TEAM_START_DISTANCE = 240.0
+RANDOM_START_MAX_ATTEMPTS = 4096
 
 RANDOM_START_YAW_JITTER = 0.45
 LOW_MOVEMENT_WINDOW_STEPS = SIMULATION_STEPS_PER_SECOND
@@ -72,6 +74,13 @@ def _angle_delta(target: float, current: float) -> float:
 
 def _alive(fighters: np.ndarray) -> np.ndarray:
     return fighters[:, 6] > 0.0
+
+
+def _min_pairwise_distance(points_a: np.ndarray, points_b: np.ndarray) -> float:
+    if len(points_a) == 0 or len(points_b) == 0:
+        return float("inf")
+    diff = points_a[:, None, :] - points_b[None, :, :]
+    return float(np.sqrt((diff * diff).sum(axis=2)).min())
 
 
 def _team_indices(
@@ -736,22 +745,60 @@ class ToyAcaiPPOEnv:
         fighters = np.asarray(obs["fighters"], dtype=np.float64)
         field_w = float(obs["battlefield"][2])
         field_h = float(obs["battlefield"][3])
-        poses = np.ascontiguousarray(fighters[:, 2:5], dtype=np.float64)
+        base_poses = np.ascontiguousarray(fighters[:, 2:5], dtype=np.float64)
 
-        for team_id, active_count in (
-            (TEAM_LEARN, self.learner_count),
-            (TEAM_RULE, self.opponent_count),
-        ):
-            indices = _team_indices(fighters, team_id, active_count)
-            team_poses = self._sample_team_start_poses(
-                team_id,
-                len(indices),
+        learn_indices = _team_indices(fighters, TEAM_LEARN, self.learner_count)
+        rule_indices = _team_indices(fighters, TEAM_RULE, self.opponent_count)
+        learn_count = len(learn_indices)
+        rule_count = len(rule_indices)
+
+        if learn_count == 0 or rule_count == 0:
+            poses = base_poses.copy()
+            for team_id, active_count in (
+                (TEAM_LEARN, self.learner_count),
+                (TEAM_RULE, self.opponent_count),
+            ):
+                indices = _team_indices(fighters, team_id, active_count)
+                team_poses = self._sample_team_start_poses(
+                    team_id,
+                    len(indices),
+                    field_w,
+                    field_h,
+                )
+                for pose, fighter_idx in zip(team_poses, indices):
+                    poses[int(fighter_idx), :] = pose
+            return poses
+
+        for _ in range(RANDOM_START_MAX_ATTEMPTS):
+            poses = base_poses.copy()
+            learn_poses = self._sample_team_start_poses(
+                TEAM_LEARN,
+                learn_count,
                 field_w,
                 field_h,
             )
-            for pose, fighter_idx in zip(team_poses, indices):
-                poses[int(fighter_idx), :] = pose
+            rule_poses = self._sample_team_start_poses(
+                TEAM_RULE,
+                rule_count,
+                field_w,
+                field_h,
+            )
+            if (
+                _min_pairwise_distance(learn_poses[:, :2], rule_poses[:, :2])
+                < MIN_TEAM_START_DISTANCE
+            ):
+                continue
 
+            for pose, fighter_idx in zip(learn_poses, learn_indices):
+                poses[int(fighter_idx), :] = pose
+            for pose, fighter_idx in zip(rule_poses, rule_indices):
+                poses[int(fighter_idx), :] = pose
+            return poses
+
+        for pose, fighter_idx in zip(learn_poses, learn_indices):
+            poses[int(fighter_idx), :] = pose
+        for pose, fighter_idx in zip(rule_poses, rule_indices):
+            poses[int(fighter_idx), :] = pose
         return poses
 
     def _sample_team_start_poses(

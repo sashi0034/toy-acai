@@ -10,12 +10,14 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT / "sim"))
 
 from toy_acai_rl.env import (  # noqa: E402
+    MIN_TEAM_START_DISTANCE,
     RANDOM_START_X_RANGE,
     RANDOM_START_Y_RANGE,
     RANDOM_START_YAW_JITTER,
     TEAM_LEARN,
     TEAM_RULE,
     ToyAcaiPPOEnv,
+    _min_pairwise_distance,
 )
 
 
@@ -69,6 +71,27 @@ class RandomStartPositionsTest(unittest.TestCase):
         self.assert_start_bounds(poses[4:7], TEAM_RULE)
         np.testing.assert_allclose(poses[2:4], initial_obs["fighters"][2:4, 2:5])
         np.testing.assert_allclose(poses[7:8], initial_obs["fighters"][7:8, 2:5])
+
+    def test_reset_keeps_opposing_teams_at_least_min_distance_apart(self):
+        core = FakeCore(FakeBattlefieldEnv(make_obs()))
+        env = ToyAcaiPPOEnv(
+            core,
+            max_steps=1,
+            random_start_positions=True,
+            learner_count=4,
+            opponent_count=4,
+            rng=np.random.RandomState(11),
+        )
+
+        env.reset()
+
+        poses = core.env.last_poses
+        learn_xy = poses[:4, :2]
+        rule_xy = poses[4:8, :2]
+        self.assertGreaterEqual(
+            _min_pairwise_distance(learn_xy, rule_xy),
+            MIN_TEAM_START_DISTANCE,
+        )
 
     def test_random_start_positions_can_be_disabled_without_binding(self):
         core = FakeCore(FakeBattlefieldEnvWithoutPose(make_obs()))

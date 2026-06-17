@@ -10,7 +10,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT / "sim"))
 
 from toy_acai_rl.env import (  # noqa: E402
-    RANDOM_START_X_RANGES,
+    RANDOM_START_X_RANGE,
     RANDOM_START_Y_RANGE,
     RANDOM_START_YAW_JITTER,
     TEAM_LEARN,
@@ -48,7 +48,7 @@ def make_obs():
 
 
 class RandomStartPositionsTest(unittest.TestCase):
-    def test_reset_randomizes_active_fighters_on_team_sides(self):
+    def test_reset_randomizes_active_fighters_within_start_bounds(self):
         initial_obs = make_obs()
         core = FakeCore(FakeBattlefieldEnv(initial_obs))
         env = ToyAcaiPPOEnv(
@@ -65,8 +65,8 @@ class RandomStartPositionsTest(unittest.TestCase):
         poses = core.env.last_poses
         self.assertIsNotNone(poses)
         self.assertEqual(poses.shape, (8, 3))
-        self.assert_team_side(poses[:2], TEAM_LEARN)
-        self.assert_team_side(poses[4:7], TEAM_RULE)
+        self.assert_start_bounds(poses[:2], TEAM_LEARN)
+        self.assert_start_bounds(poses[4:7], TEAM_RULE)
         np.testing.assert_allclose(poses[2:4], initial_obs["fighters"][2:4, 2:5])
         np.testing.assert_allclose(poses[7:8], initial_obs["fighters"][7:8, 2:5])
 
@@ -85,8 +85,8 @@ class RandomStartPositionsTest(unittest.TestCase):
 
         self.assertEqual(observations.shape[0], 1)
 
-    def assert_team_side(self, poses, team_id):
-        x_low, x_high = RANDOM_START_X_RANGES[team_id]
+    def assert_start_bounds(self, poses, team_id):
+        x_low, x_high = RANDOM_START_X_RANGE
         y_low, y_high = RANDOM_START_Y_RANGE
         self.assertTrue(np.all(poses[:, 0] >= x_low * FIELD_W))
         self.assertTrue(np.all(poses[:, 0] <= x_high * FIELD_W))

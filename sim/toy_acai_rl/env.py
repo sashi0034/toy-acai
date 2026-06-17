@@ -21,22 +21,20 @@ MISSILE_COLUMN_COUNT = 9
 MISSILE_TEAM_COLUMN = 6
 MISSILE_TARGET_COLUMN = 7
 MISSILE_ID_COLUMN = 8
-RANDOM_START_X_RANGES = {
-    TEAM_LEARN: (0.08, 0.32),
-    TEAM_RULE: (0.68, 0.92),
-}
+RANDOM_START_X_RANGE = (0.08, 0.92)
 RANDOM_START_Y_RANGE = (0.12, 0.88)
 RANDOM_START_YAW_JITTER = 0.45
 
 # -----------------------------------------------
 
 AUX_KILL_REWARD = 10.0
-AUX_DEATH_PENALTY = 20.0
+AUX_DEATH_PENALTY = 10.0
 # AUX_SURVIVAL_REWARD_PER_STEP = 0.0015 # 生存報酬は一旦無効化する。必要になったら再度有効化する。
 AUX_OUT_OF_BOUNDS_PENALTY_PER_STEP = 0.03
 AUX_EVASION_REWARD = 1.0
-AUX_MISSILE_FIRE_REWARD = 0.5
+AUX_MISSILE_FIRE_REWARD = 1.0
 
+# -----------------------------------------------
 
 def add_default_module_paths(
     repo_root: Path, module_dir: Optional[Path] = None
@@ -711,7 +709,7 @@ class ToyAcaiPPOEnv:
         if count <= 0:
             return np.zeros((0, 3), dtype=np.float64)
 
-        x_low_frac, x_high_frac = RANDOM_START_X_RANGES[team_id]
+        x_low_frac, x_high_frac = RANDOM_START_X_RANGE
         y_low_frac, y_high_frac = RANDOM_START_Y_RANGE
         xs = self.rng.uniform(x_low_frac * field_w, x_high_frac * field_w, size=count)
 

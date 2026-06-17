@@ -10,7 +10,7 @@ from torch.distributions import Bernoulli, Normal
 
 # 連続行動の探索ノイズを前 step からどれだけ残すかの AR(1) 相関係数。
 # 0 にすると毎 step 独立サンプルになる。
-CONTINUOUS_NOISE_CORRELATION = 0.95
+CONTINUOUS_NOISE_CORRELATION = 0.99
 
 
 class ActorCritic(nn.Module):

@@ -133,7 +133,7 @@ C++ 側では `acceleration` と `turn` は `[-1, 1]` に clamp され、`fire` 
 学習時の `acceleration` / `turn` の探索ノイズは、毎 step 独立ではなく時間相関を持つようにしています。
 各 step で観測を取り直して方策の平均と価値は再計算しますが、正規化ノイズ `z_t` だけを `z_t = rho * z_{t-1} + sqrt(1 - rho^2) * eps_t` で更新し、`raw = mean + std * z_t` として使います。
 これにより action repeat は使わず、数フレーム同じ方向のランダムな加速・旋回入力が残りやすくなります。
-`rho` は `0.95` 固定です。
+`rho` は `0.99` 固定です。
 episode の先頭ではノイズ状態をリセットし、評価時 (`deterministic=True`) はこの探索ノイズを使いません。
 
 ## 観測入力

@@ -37,12 +37,14 @@ AUX_DEATH_PENALTY = 10.0
 AUX_OUT_OF_BOUNDS_PENALTY_PER_STEP = 0.01
 AUX_MISSILE_TRACKING_PENALTY_MAX_PER_STEP = 0.05
 AUX_MISSILE_TRACKING_PENALTY_DISTANCE_SCALE = 200.0
-AUX_NEAREST_ENEMY_FACING_REWARD_PER_STEP = 0.02
+AUX_NEAREST_ENEMY_FACING_REWARD_PER_STEP = 0.01
+AUX_NEAREST_ENEMY_FACING_ME_PENALTY_PER_STEP = 0.015
 AUX_LOW_MOVEMENT_PENALTY_PER_STEP = 0.02
-AUX_LOW_MOVEMENT_DISTANCE_THRESHOLD = 100.0
+AUX_LOW_MOVEMENT_DISTANCE_THRESHOLD = 250.0
 AUX_MISSILE_FIRE_REWARD = 1.0
 
 # -----------------------------------------------
+
 
 def add_default_module_paths(
     repo_root: Path, module_dir: Optional[Path] = None
@@ -401,9 +403,13 @@ def _missile_tracking_penalty(
     target_yaw = math.atan2(float(rel[1]), float(rel[0]))
     if abs(_angle_delta(target_yaw, float(missile[2]))) > SEEKER_HALF_ANGLE:
         return 0.0
-    raw_penalty = float(max_penalty) * float(distance_scale) / max(
-        distance,
-        float(distance_scale),
+    raw_penalty = (
+        float(max_penalty)
+        * float(distance_scale)
+        / max(
+            distance,
+            float(distance_scale),
+        )
     )
     return float(np.clip(raw_penalty, 0.0, float(max_penalty)))
 
@@ -443,9 +449,6 @@ def auxiliary_agent_rewards(
     ),
     missile_tracking_penalty_distance_scale: float = (
         AUX_MISSILE_TRACKING_PENALTY_DISTANCE_SCALE
-    ),
-    nearest_enemy_facing_reward_per_step: float = (
-        AUX_NEAREST_ENEMY_FACING_REWARD_PER_STEP
     ),
     low_movement_penalty_per_step: float = AUX_LOW_MOVEMENT_PENALTY_PER_STEP,
     low_movement_distance_threshold: float = AUX_LOW_MOVEMENT_DISTANCE_THRESHOLD,
@@ -523,13 +526,18 @@ def auxiliary_agent_rewards(
         if nearest_opponent_idx is None:
             continue
         nearest_opponent = fighters[nearest_opponent_idx]
-        facing_amount = float(nearest_enemy_facing_reward_per_step)
         if _is_facing_position(fighter, nearest_opponent[2:4]):
-            rewards[agent_idx] += np.float32(facing_amount)
-            nearest_enemy_facing_reward_total += facing_amount
+            rewards[agent_idx] += np.float32(AUX_NEAREST_ENEMY_FACING_REWARD_PER_STEP)
+            nearest_enemy_facing_reward_total += (
+                AUX_NEAREST_ENEMY_FACING_REWARD_PER_STEP
+            )
         if _is_facing_position(nearest_opponent, fighter[2:4]):
-            rewards[agent_idx] -= np.float32(facing_amount)
-            nearest_enemy_facing_penalty_total += facing_amount
+            rewards[agent_idx] -= np.float32(
+                AUX_NEAREST_ENEMY_FACING_ME_PENALTY_PER_STEP
+            )
+            nearest_enemy_facing_penalty_total += (
+                AUX_NEAREST_ENEMY_FACING_ME_PENALTY_PER_STEP
+            )
 
     if low_movement_distances_1s is not None:
         movement_distances_1s = np.asarray(
@@ -855,13 +863,19 @@ class ToyAcaiPPOEnv:
         return np.asarray(fighters[learner_indices, 2:4], dtype=np.float64).copy()
 
     def _reset_movement_history(self) -> None:
-        self._learner_position_history = [self._current_learner_positions(self.last_obs)]
+        self._learner_position_history = [
+            self._current_learner_positions(self.last_obs)
+        ]
 
-    def _record_learner_positions(self, obs: Dict[str, np.ndarray]) -> Optional[np.ndarray]:
+    def _record_learner_positions(
+        self, obs: Dict[str, np.ndarray]
+    ) -> Optional[np.ndarray]:
         self._learner_position_history.append(self._current_learner_positions(obs))
         max_history = LOW_MOVEMENT_WINDOW_STEPS + 1
         if len(self._learner_position_history) > max_history:
-            self._learner_position_history = self._learner_position_history[-max_history:]
+            self._learner_position_history = self._learner_position_history[
+                -max_history:
+            ]
         if len(self._learner_position_history) < max_history:
             return None
         return np.linalg.norm(

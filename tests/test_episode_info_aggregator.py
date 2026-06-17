@@ -66,8 +66,9 @@ class EpisodeInfoAggregatorTest(unittest.TestCase):
 class RunEpisodeValueGifTest(unittest.TestCase):
     def test_value_gif_receives_cumulative_per_agent_rewards(self):
         # GIF オーバーレイの reward 表示はフレーム時点までの累計報酬になる。
+        # 初期フレームは 0 報酬で 1 枚記録される。
         # step 毎の rewards が [+0.5, -0.5] -> [+1.0, +0.0] -> [-2.0, +3.0] のとき、
-        # 表示用に渡される累計は [+0.5, -0.5] -> [+1.5, -0.5] -> [-0.5, +2.5] になるはず。
+        # 表示用に渡される累計は [0.0, 0.0] -> [+0.5, -0.5] -> [+1.5, -0.5] -> [-0.5, +2.5] になるはず。
         step_infos = [
             {"rewards": [0.5, -0.5]},
             {"rewards": [1.0, 0.0]},
@@ -79,10 +80,11 @@ class RunEpisodeValueGifTest(unittest.TestCase):
 
         train_ppo.run_episode(env, trainer, buffer=None, value_gif=value_gif)
 
-        self.assertEqual(len(value_gif.recorded_rewards), 3)
-        np.testing.assert_allclose(value_gif.recorded_rewards[0], [0.5, -0.5])
-        np.testing.assert_allclose(value_gif.recorded_rewards[1], [1.5, -0.5])
-        np.testing.assert_allclose(value_gif.recorded_rewards[2], [-0.5, 2.5])
+        self.assertEqual(len(value_gif.recorded_rewards), 4)
+        np.testing.assert_allclose(value_gif.recorded_rewards[0], [0.0, 0.0])
+        np.testing.assert_allclose(value_gif.recorded_rewards[1], [0.5, -0.5])
+        np.testing.assert_allclose(value_gif.recorded_rewards[2], [1.5, -0.5])
+        np.testing.assert_allclose(value_gif.recorded_rewards[3], [-0.5, 2.5])
 
     def test_value_gif_cumulative_rewards_are_independent_of_recorded_values(self):
         # values は trainer から来るので毎 step 上書きされるだけ。reward 側は累積されることを担保する。
@@ -96,8 +98,9 @@ class RunEpisodeValueGifTest(unittest.TestCase):
 
         train_ppo.run_episode(env, trainer, buffer=None, value_gif=value_gif)
 
-        np.testing.assert_allclose(value_gif.recorded_rewards[0], [0.1, 0.2])
-        np.testing.assert_allclose(value_gif.recorded_rewards[1], [0.2, 0.4])
+        np.testing.assert_allclose(value_gif.recorded_rewards[0], [0.0, 0.0])
+        np.testing.assert_allclose(value_gif.recorded_rewards[1], [0.1, 0.2])
+        np.testing.assert_allclose(value_gif.recorded_rewards[2], [0.2, 0.4])
 
 
 @unittest.skipUnless(HAS_TORCH, "torch is required")

@@ -394,7 +394,13 @@ def run_episode(
     observations = env.reset()
     trainer.reset_exploration_noise()
     if value_gif is not None:
-        env.take_render_frame()
+        initial_frame = env.take_render_frame()
+        if initial_frame is not None:
+            # 短期決着でも GIF が 0 フレームにならないよう、開始直後フレームを先に記録する。
+            initial_agent_count = int(np.asarray(observations).shape[0])
+            initial_values = np.zeros((initial_agent_count,), dtype=np.float32)
+            initial_rewards = np.zeros((initial_agent_count,), dtype=np.float32)
+            value_gif.record(initial_frame, initial_values, initial_rewards)
     total_reward = 0.0
     final_info = {}
     action_count = 0
@@ -609,7 +615,23 @@ def evaluate(
         )
     finally:
         os.chdir(original_cwd)
-    value_gif.save()
+    gif_saved = len(value_gif.frames) > 0
+    if gif_saved:
+        value_gif.save()
+    else:
+        print(
+            json.dumps(
+                {
+                    "eval_gif_skipped": {
+                        "episode": episode,
+                        "reason": "no_frames_recorded",
+                        "gif": str(gif_path),
+                    }
+                },
+                sort_keys=True,
+            ),
+            flush=True,
+        )
 
     metrics = {
         "episode": episode,
@@ -620,11 +642,13 @@ def evaluate(
         "curriculum_stage": stage_index + 1,
         "stage_episode": stage_episode,
         "opponent_count": CURRICULUM_STAGES[stage_index],
-        "gif": str(gif_path),
+        "gif": str(gif_path) if gif_saved else "",
+        "gif_saved": bool(gif_saved),
     }
     add_episode_info_metrics(metrics, info)
     write_jsonl(args.out_dir / "eval_metrics.jsonl", metrics)
-    make_spool_record(args.slack_spool, gif_path, metrics)
+    if gif_saved:
+        make_spool_record(args.slack_spool, gif_path, metrics)
     return metrics
 
 

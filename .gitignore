@@ -8,8 +8,8 @@ logs/
 
 /outputs
 
-local-scripts/
-!local-scripts/!.gitkeep
+local-scripts/*
+!local-scripts/.gitkeep
 
 linux-cli/build/
 linux-cli/battlefield.gif

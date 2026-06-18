@@ -112,7 +112,7 @@ class PPOConfig:
     eval_fire_threshold: float = 0.15
     hidden_dim: int = 256
     log_std_init: float = -0.8
-    recovery_bc_coef: float = 0.25
+    recovery_bc_coef: float = 0.5
     recovery_update_epochs: int = 1
     recovery_batch_size: int = 128
 

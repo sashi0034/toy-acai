@@ -34,7 +34,8 @@ RECOVERY_EXTREME_ACTIONS = (
 MISSILE_COLUMN_COUNT = 9
 MISSILE_TEAM_COLUMN = 6
 
-SEEKER_HALF_ANGLE = 0.85
+ACTUAL_SEEKER_HALF_ANGLE = 0.85
+HEURISTIC_SEEKER_HALF_ANGLE = 0.75 * ACTUAL_SEEKER_HALF_ANGLE
 
 # -----------------------------------------------
 
@@ -55,8 +56,11 @@ AUX_MISSILE_TRACKING_PENALTY_DISTANCE_SCALE = 200.0
 AUX_NEAREST_ENEMY_FACING_REWARD_PER_STEP = 0.01
 AUX_NEAREST_ENEMY_FACING_ME_PENALTY_PER_STEP = 0.015
 AUX_LOW_MOVEMENT_PENALTY_PER_STEP = 0.02
-AUX_LOW_MOVEMENT_DISTANCE_THRESHOLD = 250.0
+AUX_LOW_MOVEMENT_DISTANCE_THRESHOLD = 200.0
 AUX_MISSILE_FIRE_REWARD = 1.0
+AUX_FIRE_INPUT_IN_RANGE_REWARD_PER_STEP = 0.01
+AUX_FIRE_INPUT_OUT_OF_RANGE_PENALTY_PER_STEP = 0.01
+FIRE_INPUT_THRESHOLD = 0.5
 
 # -----------------------------------------------
 
@@ -291,7 +295,7 @@ def build_agent_observations(
             closing = 0.0
             if distance > 1e-6:
                 closing = -float(np.dot(rel, rel_velocity)) / (distance * MAX_SPEED)
-            in_fire_arc = 1.0 if abs(bearing_delta) <= SEEKER_HALF_ANGLE else 0.0
+            in_fire_arc = 1.0 if abs(bearing_delta) <= HEURISTIC_SEEKER_HALF_ANGLE else 0.0
             # 他機との関係は「自機から見て前後どちらか・左右どちらか」を中心に表す。
             # 絶対座標よりも、旋回や射撃の判断に直接つながりやすい。
             features.extend(
@@ -391,7 +395,7 @@ def terminal_score(
 def _is_facing_position(
     fighter: np.ndarray,
     target_position: np.ndarray,
-    half_angle: float = SEEKER_HALF_ANGLE,
+    half_angle: float = HEURISTIC_SEEKER_HALF_ANGLE,
 ) -> bool:
     rel = target_position - fighter[2:4]
     distance = math.hypot(float(rel[0]), float(rel[1]))
@@ -433,7 +437,7 @@ def _missile_tracking_penalty(
     if distance <= 1e-6:
         return float(max_penalty)
     target_yaw = math.atan2(float(rel[1]), float(rel[0]))
-    if abs(_angle_delta(target_yaw, float(missile[2]))) > SEEKER_HALF_ANGLE:
+    if abs(_angle_delta(target_yaw, float(missile[2]))) > HEURISTIC_SEEKER_HALF_ANGLE:
         return 0.0
     raw_penalty = (
         float(max_penalty)
@@ -463,7 +467,7 @@ def _has_living_opponent_in_fire_arc(
         if distance <= 1e-6:
             continue
         bearing = math.atan2(float(rel[1]), float(rel[0]))
-        if abs(_angle_delta(bearing, shooter_yaw)) <= SEEKER_HALF_ANGLE:
+        if abs(_angle_delta(bearing, shooter_yaw)) <= HEURISTIC_SEEKER_HALF_ANGLE:
             return True
     return False
 
@@ -485,6 +489,13 @@ def auxiliary_agent_rewards(
     low_movement_penalty_per_step: float = AUX_LOW_MOVEMENT_PENALTY_PER_STEP,
     low_movement_distance_threshold: float = AUX_LOW_MOVEMENT_DISTANCE_THRESHOLD,
     missile_fire_reward: float = AUX_MISSILE_FIRE_REWARD,
+    fire_input_in_range_reward_per_step: float = (
+        AUX_FIRE_INPUT_IN_RANGE_REWARD_PER_STEP
+    ),
+    fire_input_out_of_range_penalty_per_step: float = (
+        AUX_FIRE_INPUT_OUT_OF_RANGE_PENALTY_PER_STEP
+    ),
+    learner_actions: Optional[np.ndarray] = None,
     low_movement_distances_1s: Optional[np.ndarray] = None,
     learner_count: Optional[int] = None,
 ) -> Tuple[np.ndarray, Dict[str, float]]:
@@ -526,6 +537,8 @@ def auxiliary_agent_rewards(
     low_movement_penalty_total = 0.0
     mean_movement_distance_1s = 0.0
     missile_fire_reward_total = 0.0
+    fire_input_in_range_reward_total = 0.0
+    fire_input_out_of_range_penalty_total = 0.0
     opponent_indices = np.where(
         (fighters[:, 0] == float(opponent_team)) & (fighters[:, 6] > 0.0)
     )[0]
@@ -623,6 +636,37 @@ def auxiliary_agent_rewards(
         rewards += fire_rewards.astype(np.float32)
         missile_fire_reward_total = float(np.sum(fire_rewards))
 
+    if previous_obs is not None and learner_actions is not None:
+        previous_fighters = np.asarray(previous_obs["fighters"], dtype=np.float64)
+        previous_alive = previous_fighters[learner_indices, 6] > 0.0
+        actions = np.asarray(learner_actions, dtype=np.float64)
+        if actions.ndim == 1:
+            actions = actions.reshape((1, -1))
+        fire_input = actions[:, 2] >= FIRE_INPUT_THRESHOLD
+        for agent_idx, fighter_idx in enumerate(learner_indices):
+            if agent_idx >= len(fire_input):
+                break
+            if not previous_alive[agent_idx] or not fire_input[agent_idx]:
+                continue
+            fighter = previous_fighters[int(fighter_idx)]
+            in_fire_arc = _has_living_opponent_in_fire_arc(
+                fighter,
+                previous_fighters,
+                opponent_team,
+            )
+            if in_fire_arc:
+                rewards[agent_idx] += np.float32(fire_input_in_range_reward_per_step)
+                fire_input_in_range_reward_total += float(
+                    fire_input_in_range_reward_per_step
+                )
+            else:
+                rewards[agent_idx] -= np.float32(
+                    fire_input_out_of_range_penalty_per_step
+                )
+                fire_input_out_of_range_penalty_total += float(
+                    fire_input_out_of_range_penalty_per_step
+                )
+
     fighter_to_agent = {
         int(fighter_idx): agent_idx
         for agent_idx, fighter_idx in enumerate(learner_indices)
@@ -667,6 +711,8 @@ def auxiliary_agent_rewards(
         "low_movement_penalty": low_movement_penalty_total,
         "mean_movement_distance_1s": mean_movement_distance_1s,
         "missile_fire_reward": missile_fire_reward_total,
+        "fire_input_in_range_reward": fire_input_in_range_reward_total,
+        "fire_input_out_of_range_penalty": fire_input_out_of_range_penalty_total,
         "kill_reward": kill_reward_total,
         "death_penalty": death_penalty_total,
         "blue_kills": float(blue_kills),
@@ -947,6 +993,7 @@ class ToyAcaiPPOEnv:
         agent_rewards, auxiliary_info = auxiliary_agent_rewards(
             next_obs,
             previous_obs=self.last_obs,
+            learner_actions=applied_learner_actions,
             low_movement_distances_1s=low_movement_distances_1s,
             learner_count=self.learner_count,
         )

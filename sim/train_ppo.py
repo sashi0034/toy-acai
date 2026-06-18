@@ -48,6 +48,8 @@ EPISODE_INFO_METRICS = (
     "low_movement_penalty",
     "mean_movement_distance_1s",
     "missile_fire_reward",
+    "fire_input_in_range_reward",
+    "fire_input_out_of_range_penalty",
     "kill_reward",
     "death_penalty",
     "blue_kills",
@@ -72,6 +74,8 @@ EPISODE_CUMULATIVE_INFO_KEYS = (
     "nearest_enemy_facing_penalty",
     "low_movement_penalty",
     "missile_fire_reward",
+    "fire_input_in_range_reward",
+    "fire_input_out_of_range_penalty",
     "kill_reward",
     "death_penalty",
     "blue_kills",
@@ -137,7 +141,7 @@ def parse_args():
     parser.add_argument("--eval-fire-threshold", type=float, default=0.15)
     parser.add_argument("--fire-bias-init", type=float, default=1.0)
     parser.add_argument("--log-std-init", type=float, default=-0.8)
-    parser.add_argument("--recovery-bc-coef", type=float, default=0.25)
+    parser.add_argument("--recovery-bc-coef", type=float, default=0.5)
     parser.add_argument("--recovery-update-epochs", type=int, default=1)
     parser.add_argument("--recovery-batch-size", type=int, default=128)
     parser.add_argument("--hidden-dim", type=int, default=None)

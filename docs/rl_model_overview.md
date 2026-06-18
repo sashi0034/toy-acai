@@ -319,6 +319,8 @@ Blue の生存数も少し見ますが、優先度は Red の残数のほうが�
 | 最近傍敵からの向きペナルティ | `-0.02` / step | 最近傍の生存 Red が Blue 機へ向いている間、同量を本人へ減点 |
 | 低移動ペナルティ | `-0.02` / step | 直近 1 秒の移動距離が `100px` 以下の Blue 機本人へ減点 |
 | ミサイル発射報酬 | `+1.0` | 直前観測で射界内に生存 Red がいる状態で、有効にミサイルを発射できた Blue 機本人へ加点 |
+| 射界内 fire 入力報酬 | `+0.01` / step | 直前観測で自機の射界内に生存 Red がいる間、`fire >= 0.5` の入力を出している Blue 機本人へ加点 |
+| 射界外 fire 入力ペナルティ | `-0.01` / step | 直前観測で射界内に生存 Red がいないのに `fire >= 0.5` の入力を出している Blue 機本人へ減点 |
 | 撃墜報酬 | `10.0` | Red を撃墜した Blue 機本人へ加点 |
 | 自機損失ペナルティ | `-10.0` | 前 step 生存、今 step 非生存になった Blue 本人へ減点 |
 
@@ -327,6 +329,8 @@ Blue の生存数も少し見ますが、優先度は Red の残数のほうが�
 撃墜報酬 `10.0` と自機損失ペナルティ `-10.0` は、毎 step の連続シグナルより大きく、実際の撃墜と被撃墜を強く見ます。
 
 ミサイル発射報酬は、発射前の観測で自機 yaw から `0.85 rad` 以内に生存 Red がいる場合だけ加点します。命中までは要求しないため、敵へ向けて撃つ行動を早めに教えつつ、敵が後方にいる状態で cooldown だけ増えたような発射イベントには加点しません。
+
+射界内 fire 入力報酬と射界外 fire 入力ペナルティは、ミサイル発射報酬と同じ射界判定 (`0.85 rad`) を使います。実際に発射できたかどうかではなく、その step の `fire` 入力 (`>= 0.5`) に対して、毎 step の小さな shaping を与えます。
 
 ミサイル追尾ペナルティは、敵ミサイル位置から Blue 機への角度とミサイル yaw の差が `0.85 rad` 以下なら発火します。1 発あたりの減点は `0.05 * 200 / max(distance, 200)` を `0.0..0.05` に clamp した値です。近距離の追尾を強く罰しつつ、遠距離や角度が外れたミサイルでは小さく、または 0 になります。
 
@@ -364,7 +368,7 @@ rollback 状態から 30 フレームごとの 4 区間に分け、各区間に 
 最良候補が見つかった場合、その候補の最初の 30 フレーム分だけを `RecoveryTeacherBuffer` に保存します。
 保存するのは `build_agent_observations()` が返す観測と、探索で使った環境入力 `[acceleration, turn, fire]` です。
 PPO 更新時に recovery buffer が空でなければ、方策の `tanh(mean)` を teacher の連続入力へ近づけ、`fire` logit は teacher の `fire=0` に近づける behavior cloning loss を 1 epoch だけ追加で流します。
-強さは `--recovery-bc-coef` で調整でき、デフォルトは `0.25` です。
+強さは `--recovery-bc-coef` で調整でき、デフォルトは `0.5` です。
 
 ### GAE
 
@@ -449,7 +453,7 @@ critic はその step で観測した状態 \(V(s)\) の推定値、reward は `
 
 ### 補助報酬成分のエピソード累計
 
-`auxiliary_agent_rewards()` は step 単位で `missile_tracking_penalty` / `nearest_enemy_facing_reward` / `nearest_enemy_facing_penalty` / `low_movement_penalty` / `kill_reward` / `missile_fire_reward` / `out_of_bounds_penalty` / `death_penalty` / `blue_kills` / `blue_losses` / `hit_events` / `survival_reward` を返します。
+`auxiliary_agent_rewards()` は step 単位で `missile_tracking_penalty` / `nearest_enemy_facing_reward` / `nearest_enemy_facing_penalty` / `low_movement_penalty` / `kill_reward` / `missile_fire_reward` / `fire_input_in_range_reward` / `fire_input_out_of_range_penalty` / `out_of_bounds_penalty` / `death_penalty` / `blue_kills` / `blue_losses` / `hit_events` / `survival_reward` を返します。
 ログ用の集計はこれらを step 毎に積み上げ、`train_metrics.jsonl` / `eval_metrics.jsonl` ではエピソード合計として記録します。
 `mean_movement_distance_1s` だけは step 平均として 1 エピソード内の平均値を出します。
 そのため例えば「低移動ペナルティがどれくらい発火したか」は `low_movement_penalty / AUX_LOW_MOVEMENT_PENALTY_PER_STEP` で確認できます。

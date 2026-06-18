@@ -17,6 +17,8 @@ from toy_acai_rl.env import (  # noqa: E402
     AUX_MISSILE_TRACKING_PENALTY_DISTANCE_SCALE,
     AUX_MISSILE_TRACKING_PENALTY_MAX_PER_STEP,
     AUX_MISSILE_FIRE_REWARD,
+    AUX_FIRE_INPUT_IN_RANGE_REWARD_PER_STEP,
+    AUX_FIRE_INPUT_OUT_OF_RANGE_PENALTY_PER_STEP,
     AUX_NEAREST_ENEMY_FACING_REWARD_PER_STEP,
     AUX_OUT_OF_BOUNDS_PENALTY_PER_STEP,
     TEAM_LEARN,
@@ -400,6 +402,108 @@ class AuxiliaryRewardsTest(unittest.TestCase):
 
         np.testing.assert_allclose(rewards, np.zeros((4,), dtype=np.float32), atol=1e-8)
         self.assertAlmostEqual(info["missile_fire_reward"], 0.0)
+
+    def test_fire_input_in_range_reward_while_pressing_fire(self):
+        blue_positions = [[0.0, 0.0]] * 4
+        red_positions = [[100.0, 0.0], [100.0, 150.0], [100.0, 300.0], [100.0, 450.0]]
+        previous_obs = make_obs(
+            blue_positions=blue_positions,
+            red_positions=red_positions,
+        )
+        current_obs = make_obs(
+            blue_positions=blue_positions,
+            red_positions=red_positions,
+        )
+        learner_actions = np.array([[0.0, 0.0, 1.0]], dtype=np.float64)
+
+        rewards, info = auxiliary_agent_rewards(
+            current_obs,
+            previous_obs=previous_obs,
+            learner_actions=learner_actions,
+            learner_count=1,
+        )
+
+        expected = np.array(
+            [
+                AUX_FIRE_INPUT_IN_RANGE_REWARD_PER_STEP
+                + AUX_NEAREST_ENEMY_FACING_REWARD_PER_STEP
+            ],
+            dtype=np.float32,
+        )
+        np.testing.assert_allclose(rewards, expected, atol=1e-8)
+        self.assertAlmostEqual(
+            info["fire_input_in_range_reward"],
+            AUX_FIRE_INPUT_IN_RANGE_REWARD_PER_STEP,
+        )
+        self.assertAlmostEqual(info["fire_input_out_of_range_penalty"], 0.0)
+
+    def test_fire_input_out_of_range_penalty_while_pressing_fire(self):
+        previous_obs = make_obs(
+            blue_positions=[[0.0, 0.0]] * 4,
+            red_positions=[
+                [-100.0, 0.0],
+                [-100.0, 50.0],
+                [-100.0, 100.0],
+                [-100.0, 150.0],
+            ],
+            red_yaws=[np.pi, np.pi, np.pi, np.pi],
+        )
+        current_obs = make_obs(
+            blue_positions=[[0.0, 0.0]] * 4,
+            red_positions=[
+                [-100.0, 0.0],
+                [-100.0, 50.0],
+                [-100.0, 100.0],
+                [-100.0, 150.0],
+            ],
+            red_yaws=[np.pi, np.pi, np.pi, np.pi],
+        )
+        learner_actions = np.array([[0.0, 0.0, 1.0]], dtype=np.float64)
+
+        rewards, info = auxiliary_agent_rewards(
+            current_obs,
+            previous_obs=previous_obs,
+            learner_actions=learner_actions,
+            learner_count=1,
+        )
+
+        expected = np.array(
+            [-AUX_FIRE_INPUT_OUT_OF_RANGE_PENALTY_PER_STEP],
+            dtype=np.float32,
+        )
+        np.testing.assert_allclose(rewards, expected, atol=1e-8)
+        self.assertAlmostEqual(info["fire_input_in_range_reward"], 0.0)
+        self.assertAlmostEqual(
+            info["fire_input_out_of_range_penalty"],
+            AUX_FIRE_INPUT_OUT_OF_RANGE_PENALTY_PER_STEP,
+        )
+
+    def test_fire_input_reward_ignored_without_fire_input(self):
+        blue_positions = [[0.0, 0.0]] * 4
+        red_positions = [[100.0, 0.0], [100.0, 150.0], [100.0, 300.0], [100.0, 450.0]]
+        previous_obs = make_obs(
+            blue_positions=blue_positions,
+            red_positions=red_positions,
+        )
+        current_obs = make_obs(
+            blue_positions=blue_positions,
+            red_positions=red_positions,
+        )
+        learner_actions = np.array([[0.0, 0.0, 0.0]], dtype=np.float64)
+
+        rewards, info = auxiliary_agent_rewards(
+            current_obs,
+            previous_obs=previous_obs,
+            learner_actions=learner_actions,
+            learner_count=1,
+        )
+
+        self.assertAlmostEqual(info["fire_input_in_range_reward"], 0.0)
+        self.assertAlmostEqual(info["fire_input_out_of_range_penalty"], 0.0)
+        self.assertAlmostEqual(
+            rewards[0],
+            AUX_NEAREST_ENEMY_FACING_REWARD_PER_STEP,
+        )
 
     def test_blue_hit_event_rewards_shooter_only(self):
         rewards, info = auxiliary_agent_rewards(make_obs(hit_events=[[2, 0, 4, 1]]))

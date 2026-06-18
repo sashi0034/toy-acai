@@ -1,4 +1,7 @@
-set(SIV3D_ROOT "${CMAKE_CURRENT_LIST_DIR}/../../siv3d/OpenSiv3D" CACHE PATH "Path to the OpenSiv3D source tree")
+set(SIV3D_ROOT "" CACHE PATH "Path to the OpenSiv3D source tree")
+if(NOT SIV3D_ROOT)
+	message(FATAL_ERROR "SIV3D_ROOT is not set. Set -DSIV3D_ROOT=/path/to/OpenSiv3D")
+endif()
 
 get_filename_component(SIV3D_ROOT "${SIV3D_ROOT}" ABSOLUTE)
 set(SIV3D_INCLUDE_DIR "${SIV3D_ROOT}/Siv3D/include")

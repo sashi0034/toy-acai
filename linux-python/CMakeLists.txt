@@ -29,7 +29,7 @@ nanobind_add_module(toy_acai_core
 	../src/PythonBindings.cpp
 )
 target_compile_features(toy_acai_core PRIVATE cxx_std_20)
-target_compile_options(toy_acai_core PRIVATE -Wall -Wextra -Wpedantic -msse4.1)
+target_compile_options(toy_acai_core PRIVATE -Wall -Wextra -Wpedantic -msse4.2)
 target_link_libraries(toy_acai_core PRIVATE Siv3D::Siv3D)
 
 add_custom_target(toy-acai-python-copy-resources ALL

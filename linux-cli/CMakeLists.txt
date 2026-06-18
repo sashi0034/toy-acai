@@ -1,5 +1,7 @@
 cmake_minimum_required(VERSION 3.16)
 
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
 project(toy-acai-linux-cli LANGUAGES CXX)
 
 include("${CMAKE_CURRENT_LIST_DIR}/../linux/FindSiv3D.cmake")
@@ -11,7 +13,7 @@ add_executable(toy-acai
 )
 
 target_compile_features(toy-acai PRIVATE cxx_std_20)
-target_compile_options(toy-acai PRIVATE -Wall -Wextra -Wpedantic -msse4.1)
+target_compile_options(toy-acai PRIVATE -Wall -Wextra -Wpedantic -msse4.2)
 target_link_libraries(toy-acai PRIVATE Siv3D::Siv3D)
 
 add_custom_target(toy-acai-copy-resources ALL

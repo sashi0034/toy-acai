@@ -22,7 +22,8 @@
 6. `ToyAcaiPPOEnv.step()` が Blue の行動と Red の行動をまとめて C++ シミュレータへ渡す。
 7. 次状態、各 Blue 機の報酬、終了判定を受け取る。
 8. 観測、行動、行動確率、報酬、価値推定を `RolloutBuffer` に蓄積する。
-9. `rollout_steps` 以上たまったら、GAE で advantage / return を計算し、PPO でネットワークを更新する。
+9. ミサイル命中で Blue 機が撃墜された場合、必要なら recovery teacher を探索して `RecoveryTeacherBuffer` に蓄積する。
+10. `rollout_steps` 以上たまったら、GAE で advantage / return を計算し、PPO でネットワークを更新する。recovery teacher が溜まっている場合は、同じタイミングで小さな behavior cloning 更新も行う。
 
 ## 学習対象と対戦相手
 
@@ -135,6 +136,13 @@ C++ 側の `BattlefieldEnv` は、各 step 後に Python へ次の情報を返�
 | 2 | fire | 離散値 | `0` または `1` |
 
 C++ 側では `acceleration` と `turn` は `[-1, 1]` に clamp され、`fire` は `0.5` 以上なら発射入力として扱われます。
+
+Recovery teacher の探索では方策ネットワークは使わず、`fire=0` 固定で次の 4 種類だけを候補入力にします。
+
+- 左急旋回 + 最大加速: `[1, -1, 0]`
+- 左急旋回 + 最大減速: `[-1, -1, 0]`
+- 右急旋回 + 最大加速: `[1, 1, 0]`
+- 右急旋回 + 最大減速: `[-1, 1, 0]`
 
 連続行動は正規分布からサンプルし、PPO の log probability 計算には `tanh` 前の `raw` 値を保存します。
 環境へ渡すときだけ `tanh` で範囲内に収めます。
@@ -343,6 +351,20 @@ PPO の実装は `sim/toy_acai_rl/ppo.py` にあります。
 
 複数機を扱うため、`RolloutBuffer` は機体ごとの `AgentRolloutBuffer` を持ちます。
 更新時は各機の buffer で対応する個別モデルを更新します。
+
+### recovery teacher buffer
+
+Blue 機が敵ミサイル命中で死亡した step では、C++ の `BattlefieldEnv.snapshot()` で保存しておいた通常 env の状態履歴を使い、死亡時点の 90 フレーム前へ rollback します。
+探索 rollout は通常の学習 env とは別に作った描画なし env に `restore_snapshot()` して実行するため、学習中の本体 env の状態は破壊しません。
+
+rollback 状態から 30 フレームごとの 4 区間に分け、各区間に 4 種類の極端入力を割り当てるので、候補は `4^4 = 256` 通りです。
+各候補を最後まで rollout し、対象 Blue 機が生存していた候補だけを採用候補にします。
+複数候補が生存した場合は、敵ミサイルからの最小距離、最終距離、場外時間、戦況の順でスコアを比べます。
+
+最良候補が見つかった場合、その候補の最初の 30 フレーム分だけを `RecoveryTeacherBuffer` に保存します。
+保存するのは `build_agent_observations()` が返す観測と、探索で使った環境入力 `[acceleration, turn, fire]` です。
+PPO 更新時に recovery buffer が空でなければ、方策の `tanh(mean)` を teacher の連続入力へ近づけ、`fire` logit は teacher の `fire=0` に近づける behavior cloning loss を 1 epoch だけ追加で流します。
+強さは `--recovery-bc-coef` で調整でき、デフォルトは `0.25` です。
 
 ### GAE
 

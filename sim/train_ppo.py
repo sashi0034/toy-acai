@@ -14,7 +14,12 @@ from toy_acai_rl.env import (
     load_core,
     observation_dim,
 )
-from toy_acai_rl.ppo import PPOConfig, PPOTrainer, RolloutBuffer
+from toy_acai_rl.ppo import (
+    PPOConfig,
+    PPOTrainer,
+    RecoveryTeacherBuffer,
+    RolloutBuffer,
+)
 from toy_acai_rl.curriculum import (
     CURRICULUM_EVAL_EVERY,
     CURRICULUM_LEARNER_COUNT,
@@ -48,6 +53,11 @@ EPISODE_INFO_METRICS = (
     "blue_kills",
     "blue_losses",
     "hit_events",
+    "recovery_teacher_attempts",
+    "recovery_teacher_successes",
+    "recovery_teacher_examples",
+    "recovery_teacher_candidates",
+    "recovery_teacher_best_score",
 )
 
 # auxiliary_agent_rewards が step ごとに返す「その step だけの増分」を、
@@ -67,6 +77,10 @@ EPISODE_CUMULATIVE_INFO_KEYS = (
     "blue_kills",
     "blue_losses",
     "hit_events",
+    "recovery_teacher_attempts",
+    "recovery_teacher_successes",
+    "recovery_teacher_examples",
+    "recovery_teacher_candidates",
 )
 
 
@@ -123,6 +137,9 @@ def parse_args():
     parser.add_argument("--eval-fire-threshold", type=float, default=0.15)
     parser.add_argument("--fire-bias-init", type=float, default=1.0)
     parser.add_argument("--log-std-init", type=float, default=-0.8)
+    parser.add_argument("--recovery-bc-coef", type=float, default=0.25)
+    parser.add_argument("--recovery-update-epochs", type=int, default=1)
+    parser.add_argument("--recovery-batch-size", type=int, default=128)
     parser.add_argument("--hidden-dim", type=int, default=None)
     parser.add_argument("--learner-count", type=int, default=int(os.environ.get("TOY_ACAI_LEARNER_COUNT", "1")))
     parser.add_argument("--device", default="cpu")
@@ -392,6 +409,7 @@ def run_episode(
     env: ToyAcaiPPOEnv,
     trainer: PPOTrainer,
     buffer: Optional[RolloutBuffer],
+    recovery_buffer: Optional[RecoveryTeacherBuffer] = None,
     deterministic: bool = False,
     value_gif: Optional[object] = None,
 ):
@@ -441,6 +459,13 @@ def run_episode(
             # PPO では「当時の行動確率」と「価値推定」を後で使うため、
             # 観測・行動・報酬だけでなく log_prob と value も一緒に保存する。
             buffer.add(observations, raw_actions, log_probs, result.rewards, result.done, values)
+        if recovery_buffer is not None and hasattr(env, "pop_recovery_teacher_examples"):
+            for example in env.pop_recovery_teacher_examples():
+                recovery_buffer.add(
+                    example.agent_id,
+                    example.observation,
+                    example.action,
+                )
         total_reward += float(np.mean(result.rewards))
         observations = result.observations
         # info 内の補助報酬は step 毎の増分なので、最後の step だけ残すと
@@ -691,6 +716,9 @@ def main():
         eval_fire_threshold=args.eval_fire_threshold,
         log_std_init=args.log_std_init,
         hidden_dim=hidden_dim,
+        recovery_bc_coef=args.recovery_bc_coef,
+        recovery_update_epochs=args.recovery_update_epochs,
+        recovery_batch_size=args.recovery_batch_size,
     )
     args.learner_count = CURRICULUM_LEARNER_COUNT
     agent_count = int(np.clip(args.learner_count, 1, int(toy_acai_core.TEAM_FIGHTER_COUNT)))
@@ -718,6 +746,7 @@ def main():
         start_episode = resumed_episode + 1
         stage_index, stage_episode = curriculum_stage_from_checkpoint(checkpoint)
     buffer = RolloutBuffer(agent_count=agent_count)
+    recovery_buffer = RecoveryTeacherBuffer(agent_count=agent_count)
     eval_reward_history = reward_history_from_jsonl(
         args.out_dir / "eval_metrics.jsonl",
         resumed_episode,
@@ -735,7 +764,13 @@ def main():
         # 2. 経験を buffer にためる
         # 3. 一定量たまったら PPO で方策を更新する
         stage_episode += 1
-        observations, reward, info = run_episode(train_env, trainer, buffer=buffer, deterministic=False)
+        observations, reward, info = run_episode(
+            train_env,
+            trainer,
+            buffer=buffer,
+            recovery_buffer=recovery_buffer,
+            deterministic=False,
+        )
         latest_observations = observations
         metrics = {
             "episode": episode,
@@ -744,6 +779,7 @@ def main():
             "red_alive": info.get("red_alive", 0.0),
             "outcome": info.get("outcome", 0.0),
             "buffer_steps": len(buffer),
+            "recovery_buffer_steps": len(recovery_buffer),
             "curriculum_stage": stage_index + 1,
             "stage_episode": stage_episode,
             "opponent_count": CURRICULUM_STAGES[stage_index],
@@ -758,6 +794,9 @@ def main():
             last_values = trainer.values(latest_observations)
             update_stats = trainer.update(buffer, last_values)
             buffer.clear()
+            if len(recovery_buffer) > 0:
+                update_stats.update(trainer.update_recovery(recovery_buffer))
+                recovery_buffer.clear()
             write_jsonl(args.out_dir / "update_metrics.jsonl", {"episode": episode, **update_stats})
 
         if args.checkpoint_every > 0 and episode % args.checkpoint_every == 0:
@@ -836,6 +875,7 @@ def main():
                     args=args,
                 )
                 buffer.clear()
+                recovery_buffer.clear()
                 slack_update_post_count = reset_reward_chart_stage(eval_reward_history)
                 train_env = make_train_env(toy_acai_core, args, CURRICULUM_STAGES[stage_index])
                 latest_observations = train_env.reset()
@@ -844,6 +884,9 @@ def main():
         # 最後に rollout_steps 未満の経験が余っていても、捨てずに一度だけ更新する。
         last_values = trainer.values(latest_observations)
         update_stats = trainer.update(buffer, last_values)
+        if len(recovery_buffer) > 0:
+            update_stats.update(trainer.update_recovery(recovery_buffer))
+            recovery_buffer.clear()
         write_jsonl(args.out_dir / "update_metrics.jsonl", {"episode": args.episodes, **update_stats})
     trainer.save(
         args.out_dir / "checkpoints" / "ppo_latest.pt",

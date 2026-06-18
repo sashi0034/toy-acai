@@ -1,8 +1,9 @@
+import itertools
 import math
 import os
 import sys
 from pathlib import Path
-from typing import Dict, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -17,6 +18,18 @@ MAX_SPEED = 360.0
 RENDER_INTERVAL = 0.1
 
 SIMULATION_STEPS_PER_SECOND = 60
+RECOVERY_ROLLBACK_STEPS = int(1.5 * SIMULATION_STEPS_PER_SECOND)
+RECOVERY_SEGMENT_STEPS = int(0.5 * SIMULATION_STEPS_PER_SECOND)
+RECOVERY_SEGMENT_COUNT = 4
+RECOVERY_ROLLOUT_STEPS = RECOVERY_SEGMENT_STEPS * RECOVERY_SEGMENT_COUNT
+RECOVERY_TEACHER_STEPS = RECOVERY_SEGMENT_STEPS
+# action は [acceleration, turn, fire]。左旋回は yaw を減らす向きとして扱う。
+RECOVERY_EXTREME_ACTIONS = (
+    np.array([1.0, -1.0, 1.0], dtype=np.float64),
+    np.array([-1.0, -1.0, 1.0], dtype=np.float64),
+    np.array([1.0, 1.0, 1.0], dtype=np.float64),
+    np.array([-1.0, 1.0, 1.0], dtype=np.float64),
+)
 
 MISSILE_COLUMN_COUNT = 9
 MISSILE_TEAM_COLUMN = 6
@@ -33,8 +46,8 @@ RANDOM_START_MAX_ATTEMPTS = 4096
 RANDOM_START_YAW_JITTER = 0.45
 LOW_MOVEMENT_WINDOW_STEPS = SIMULATION_STEPS_PER_SECOND
 
-AUX_KILL_REWARD = 10.0
-AUX_DEATH_PENALTY = 10.0
+AUX_KILL_REWARD = 5.0
+AUX_DEATH_PENALTY = 5.0
 # AUX_SURVIVAL_REWARD_PER_STEP = 0.0015 # 生存報酬は一旦無効化する。必要になったら再度有効化する。
 AUX_OUT_OF_BOUNDS_PENALTY_PER_STEP = 0.01
 AUX_MISSILE_TRACKING_PENALTY_MAX_PER_STEP = 0.05
@@ -74,6 +87,16 @@ def _angle_delta(target: float, current: float) -> float:
 
 def _alive(fighters: np.ndarray) -> np.ndarray:
     return fighters[:, 6] > 0.0
+
+
+def _copy_observation(obs: Dict[str, object]) -> Dict[str, object]:
+    copied = {}
+    for key, value in obs.items():
+        if isinstance(value, np.ndarray):
+            copied[key] = value.copy()
+        else:
+            copied[key] = value
+    return copied
 
 
 def _min_pairwise_distance(points_a: np.ndarray, points_b: np.ndarray) -> float:
@@ -669,6 +692,20 @@ class StepResult:
         self.info = info
 
 
+class RecoveryTeacherExample:
+    def __init__(self, agent_id: int, observation: np.ndarray, action: np.ndarray):
+        self.agent_id = agent_id
+        self.observation = observation
+        self.action = action
+
+
+class _RecoveryHistoryEntry:
+    def __init__(self, step_count: int, snapshot: object, obs: Dict[str, object]):
+        self.step_count = step_count
+        self.snapshot = snapshot
+        self.obs = obs
+
+
 class ToyAcaiPPOEnv:
     """toy_acai_core の環境を、PPO 学習で扱いやすい形に包むラッパー。"""
 
@@ -696,8 +733,11 @@ class ToyAcaiPPOEnv:
         self.opponent_count = self._clamp_learner_count(opponent_count)
         self.rng = rng if rng is not None else np.random.default_rng()
         self.env = self._make_env()
+        self._recovery_env = None
         self.last_obs = None
         self._learner_position_history = []
+        self._recovery_history: List[_RecoveryHistoryEntry] = []
+        self._pending_recovery_teacher_examples: List[RecoveryTeacherExample] = []
 
     def _clamp_learner_count(self, learner_count: Optional[int]) -> int:
         team_count = int(self.core.TEAM_FIGHTER_COUNT)
@@ -726,6 +766,7 @@ class ToyAcaiPPOEnv:
         self.last_obs = self.env.reset()
         self._apply_random_start_positions()
         self._reset_movement_history()
+        self._reset_recovery_history()
         return build_agent_observations(
             self.last_obs,
             active_learner_count=self.learner_count,
@@ -829,6 +870,50 @@ class ToyAcaiPPOEnv:
         )
         return np.stack([xs, ys, yaws], axis=1).astype(np.float64)
 
+    def pop_recovery_teacher_examples(self) -> List[RecoveryTeacherExample]:
+        examples = self._pending_recovery_teacher_examples
+        self._pending_recovery_teacher_examples = []
+        return examples
+
+    def _reset_recovery_history(self) -> None:
+        self._recovery_history = []
+        self._pending_recovery_teacher_examples = []
+        self._remember_recovery_state(self.last_obs)
+
+    def _recovery_snapshot_available(self) -> bool:
+        return hasattr(self.env, "snapshot") and hasattr(self.env, "restore_snapshot")
+
+    def _remember_recovery_state(self, obs: Dict[str, object]) -> None:
+        if obs is None or not self._recovery_snapshot_available():
+            return
+        self._recovery_history.append(
+            _RecoveryHistoryEntry(
+                step_count=self.step_count,
+                snapshot=self.env.snapshot(),
+                obs=_copy_observation(obs),
+            )
+        )
+        max_history = RECOVERY_ROLLBACK_STEPS + RECOVERY_ROLLOUT_STEPS + 2
+        if len(self._recovery_history) > max_history:
+            self._recovery_history = self._recovery_history[-max_history:]
+
+    def _recovery_history_entry_for_step(
+        self, step_count: int
+    ) -> Optional[_RecoveryHistoryEntry]:
+        for entry in reversed(self._recovery_history):
+            if entry.step_count == step_count:
+                return entry
+        return None
+
+    def _make_recovery_env(self):
+        if self._recovery_env is None:
+            self._recovery_env = self.core.BattlefieldEnv(
+                render=False,
+                active_blue_count=self.learner_count,
+                active_red_count=self.opponent_count,
+            )
+        return self._recovery_env
+
     def step(self, learner_actions: np.ndarray) -> StepResult:
         if self.last_obs is None:
             raise RuntimeError("reset() must be called before step()")
@@ -849,6 +934,7 @@ class ToyAcaiPPOEnv:
 
         next_obs = self.env.step(actions)
         self.step_count += 1
+        self._remember_recovery_state(next_obs)
         low_movement_distances_1s = self._record_learner_positions(next_obs)
 
         # 終了条件は「どちらかが全滅」または「最大ステップ到達」。
@@ -864,11 +950,13 @@ class ToyAcaiPPOEnv:
             low_movement_distances_1s=low_movement_distances_1s,
             learner_count=self.learner_count,
         )
+        recovery_info = self._maybe_generate_recovery_teachers(self.last_obs, next_obs)
         info = {
             "blue_alive": float(blue_alive),
             "red_alive": float(red_alive),
             "outcome": 0.0,
             **auxiliary_info,
+            **recovery_info,
         }
         if done:
             # 終了時だけ勝敗に応じた大きな報酬を足す。
@@ -897,6 +985,216 @@ class ToyAcaiPPOEnv:
             agent_rewards.astype(np.float32),
             done,
             info,
+        )
+
+    def _maybe_generate_recovery_teachers(
+        self,
+        previous_obs: Dict[str, object],
+        next_obs: Dict[str, object],
+    ) -> Dict[str, float]:
+        info = {
+            "recovery_teacher_attempts": 0.0,
+            "recovery_teacher_successes": 0.0,
+            "recovery_teacher_examples": 0.0,
+            "recovery_teacher_candidates": 0.0,
+            "recovery_teacher_best_score": 0.0,
+        }
+        killed = self._missile_killed_learner_rows(previous_obs, next_obs)
+        if not killed:
+            return info
+        if not self._recovery_snapshot_available():
+            return info
+
+        rollback_step = self.step_count - RECOVERY_ROLLBACK_STEPS
+        if rollback_step < 0:
+            return info
+        rollback_entry = self._recovery_history_entry_for_step(rollback_step)
+        if rollback_entry is None:
+            return info
+
+        for agent_id, fighter_idx in killed:
+            info["recovery_teacher_attempts"] += 1.0
+            result = self._search_recovery_teacher(
+                rollback_entry,
+                agent_id=agent_id,
+                fighter_idx=fighter_idx,
+            )
+            info["recovery_teacher_candidates"] += float(result["candidates"])
+            if not result["examples"]:
+                continue
+            self._pending_recovery_teacher_examples.extend(result["examples"])
+            info["recovery_teacher_successes"] += 1.0
+            info["recovery_teacher_examples"] += float(len(result["examples"]))
+            info["recovery_teacher_best_score"] = max(
+                info["recovery_teacher_best_score"],
+                float(result["score"]),
+            )
+        return info
+
+    def _missile_killed_learner_rows(
+        self,
+        previous_obs: Dict[str, object],
+        next_obs: Dict[str, object],
+    ) -> List[Tuple[int, int]]:
+        previous_fighters = np.asarray(previous_obs["fighters"], dtype=np.float64)
+        next_fighters = np.asarray(next_obs["fighters"], dtype=np.float64)
+        hit_events = np.asarray(
+            next_obs.get("hit_events", np.zeros((0, 4), dtype=np.float64)),
+            dtype=np.float64,
+        )
+        if hit_events.ndim == 1:
+            hit_events = hit_events.reshape((-1, 4))
+        hit_targets = {
+            int(event[2])
+            for event in hit_events
+            if int(event[3]) == TEAM_LEARN
+        }
+        if not hit_targets:
+            return []
+
+        learner_indices = _team_indices(
+            previous_fighters,
+            TEAM_LEARN,
+            self.learner_count,
+        )
+        killed = []
+        for agent_id, fighter_idx in enumerate(learner_indices):
+            fighter_idx = int(fighter_idx)
+            if fighter_idx not in hit_targets:
+                continue
+            if previous_fighters[fighter_idx, 6] > 0.0 and next_fighters[fighter_idx, 6] <= 0.0:
+                killed.append((agent_id, fighter_idx))
+        return killed
+
+    def _search_recovery_teacher(
+        self,
+        rollback_entry: _RecoveryHistoryEntry,
+        *,
+        agent_id: int,
+        fighter_idx: int,
+    ) -> Dict[str, object]:
+        best_score = None
+        best_examples: List[RecoveryTeacherExample] = []
+        candidates = 0
+
+        for segment_actions in itertools.product(
+            RECOVERY_EXTREME_ACTIONS,
+            repeat=RECOVERY_SEGMENT_COUNT,
+        ):
+            candidates += 1
+            result = self._rollout_recovery_candidate(
+                rollback_entry,
+                agent_id=agent_id,
+                fighter_idx=fighter_idx,
+                segment_actions=segment_actions,
+            )
+            if result is None:
+                continue
+            score_tuple, examples = result
+            if best_score is None or score_tuple > best_score:
+                best_score = score_tuple
+                best_examples = examples
+
+        return {
+            "candidates": candidates,
+            "score": 0.0 if best_score is None else float(best_score[0]),
+            "examples": best_examples,
+        }
+
+    def _rollout_recovery_candidate(
+        self,
+        rollback_entry: _RecoveryHistoryEntry,
+        *,
+        agent_id: int,
+        fighter_idx: int,
+        segment_actions: Tuple[np.ndarray, ...],
+    ) -> Optional[Tuple[Tuple[float, float, float, float], List[RecoveryTeacherExample]]]:
+        recovery_env = self._make_recovery_env()
+        if not hasattr(recovery_env, "restore_snapshot"):
+            return None
+        obs = recovery_env.restore_snapshot(rollback_entry.snapshot)
+        examples: List[RecoveryTeacherExample] = []
+        min_missile_distance = self._nearest_hostile_missile_distance(obs, fighter_idx)
+
+        for step_idx in range(RECOVERY_ROLLOUT_STEPS):
+            action = segment_actions[step_idx // RECOVERY_SEGMENT_STEPS]
+            if step_idx < RECOVERY_TEACHER_STEPS:
+                agent_obs = build_agent_observations(
+                    obs,
+                    active_learner_count=self.learner_count,
+                )
+                examples.append(
+                    RecoveryTeacherExample(
+                        agent_id=agent_id,
+                        observation=np.asarray(agent_obs[agent_id], dtype=np.float32).copy(),
+                        action=np.asarray(action, dtype=np.float32).copy(),
+                    )
+                )
+
+            actions = self.opponent.actions(obs, self.core.FIGHTER_COUNT)
+            learner_indices = _team_indices(
+                np.asarray(obs["fighters"], dtype=np.float64),
+                TEAM_LEARN,
+                self.learner_count,
+            )
+            for learner_idx in learner_indices:
+                actions[int(learner_idx), :] = 0.0
+            actions[fighter_idx, :] = action
+
+            obs = recovery_env.step(actions)
+            min_missile_distance = min(
+                min_missile_distance,
+                self._nearest_hostile_missile_distance(obs, fighter_idx),
+            )
+            fighters = np.asarray(obs["fighters"], dtype=np.float64)
+            if fighters[fighter_idx, 6] <= 0.0:
+                return None
+
+        score = self._recovery_score_tuple(
+            obs,
+            fighter_idx=fighter_idx,
+            min_missile_distance=min_missile_distance,
+        )
+        return score, examples
+
+    def _nearest_hostile_missile_distance(
+        self,
+        obs: Dict[str, object],
+        fighter_idx: int,
+    ) -> float:
+        fighters = np.asarray(obs["fighters"], dtype=np.float64)
+        missiles = np.asarray(obs["missiles"], dtype=np.float64)
+        if missiles.ndim == 1:
+            missiles = missiles.reshape((-1, MISSILE_COLUMN_COUNT))
+        battlefield = obs["battlefield"]
+        diag = max(math.hypot(float(battlefield[2]), float(battlefield[3])), 1e-6)
+        if len(missiles) == 0:
+            return diag
+        fighter = fighters[fighter_idx]
+        hostile = missiles[missiles[:, MISSILE_TEAM_COLUMN] != fighter[0]]
+        if len(hostile) == 0:
+            return diag
+        deltas = hostile[:, 0:2] - fighter[2:4]
+        distances = np.sqrt(np.sum(deltas * deltas, axis=1))
+        return float(np.clip(np.min(distances), 0.0, diag))
+
+    def _recovery_score_tuple(
+        self,
+        obs: Dict[str, object],
+        *,
+        fighter_idx: int,
+        min_missile_distance: float,
+    ) -> Tuple[float, float, float, float]:
+        fighters = np.asarray(obs["fighters"], dtype=np.float64)
+        final_missile_distance = self._nearest_hostile_missile_distance(obs, fighter_idx)
+        blue_alive = self._team_alive(fighters, TEAM_LEARN, self.learner_count)
+        red_alive = self._team_alive(fighters, TEAM_RULE, self.opponent_count)
+        # 生存できた候補同士は、ミサイルからの最小距離、最終距離、場外時間、戦況で順に比べる。
+        return (
+            float(min_missile_distance),
+            float(final_missile_distance),
+            -float(fighters[fighter_idx, 8]),
+            float(blue_alive - red_alive),
         )
 
     def take_render_frame(self):

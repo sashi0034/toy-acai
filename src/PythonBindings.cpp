@@ -37,6 +37,11 @@ namespace
     constexpr double DefaultRenderInterval = 0.1;
     constexpr const char* Siv3DThreadError = "Siv3D rendering must be used from the thread that created the rendering BattlefieldEnv";
 
+    struct BattlefieldSnapshot
+    {
+        toy_acai::BattlefieldContext context;
+    };
+
     [[noreturn]]
     void ThrowSiv3DError(const s3d::Error& error)
     {
@@ -391,6 +396,23 @@ namespace
             return observation();
         }
 
+        BattlefieldSnapshot snapshot() const
+        {
+            assertRenderOwnerThread();
+            return BattlefieldSnapshot{m_context};
+        }
+
+        nb::dict restoreSnapshot(const BattlefieldSnapshot& snapshot)
+        {
+            assertRenderOwnerThread();
+            m_context = snapshot.context;
+            if (m_renderSession)
+            {
+                m_renderSession->resetRenderer();
+            }
+            return observation();
+        }
+
         nb::object takeRenderFrame()
         {
             if (!m_renderSession)
@@ -471,6 +493,8 @@ NB_MODULE(toy_acai_core, m)
     m.attr("SIMULATION_DELTA_TIME") = SimulationDeltaTime;
     m.attr("RENDER_INTERVAL") = DefaultRenderInterval;
 
+    nb::class_<BattlefieldSnapshot>(m, "BattlefieldSnapshot");
+
     nb::class_<BattlefieldEnv>(m, "BattlefieldEnv")
         .def(
             nb::init<bool, int, int, double, int, int>(),
@@ -485,5 +509,7 @@ NB_MODULE(toy_acai_core, m)
         .def("reset", &BattlefieldEnv::reset)
         .def("step", &BattlefieldEnv::step, "actions"_a)
         .def("set_fighter_poses", &BattlefieldEnv::setFighterPoses, "poses"_a)
+        .def("snapshot", &BattlefieldEnv::snapshot)
+        .def("restore_snapshot", &BattlefieldEnv::restoreSnapshot, "snapshot"_a)
         .def("take_render_frame", &BattlefieldEnv::takeRenderFrame);
 }

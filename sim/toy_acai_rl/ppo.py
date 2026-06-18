@@ -5,6 +5,7 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from torch.distributions import Bernoulli, Normal
 
 
@@ -111,6 +112,9 @@ class PPOConfig:
     eval_fire_threshold: float = 0.15
     hidden_dim: int = 256
     log_std_init: float = -0.8
+    recovery_bc_coef: float = 0.25
+    recovery_update_epochs: int = 1
+    recovery_batch_size: int = 128
 
 
 class AgentRolloutBuffer:
@@ -228,6 +232,59 @@ class RolloutBuffer:
             buffer.clear()
 
 
+class AgentRecoveryTeacherBuffer:
+    """1 機ぶんの recovery teacher state/action ペアを保持する。"""
+
+    def __init__(self):
+        self.observations = []
+        self.actions = []
+
+    def add(self, obs, action):
+        self.observations.append(np.asarray(obs, dtype=np.float32))
+        self.actions.append(np.asarray(action, dtype=np.float32))
+
+    def __len__(self):
+        return len(self.actions)
+
+    def clear(self):
+        self.observations.clear()
+        self.actions.clear()
+
+    def tensors(self, device: torch.device) -> Dict[str, torch.Tensor]:
+        return {
+            "obs": torch.as_tensor(
+                np.asarray(self.observations, dtype=np.float32),
+                device=device,
+            ),
+            "actions": torch.as_tensor(
+                np.asarray(self.actions, dtype=np.float32),
+                device=device,
+            ),
+        }
+
+
+class RecoveryTeacherBuffer:
+    """Recovery rollout で見つけた教師行動を agent ごとに分けてためる。"""
+
+    def __init__(self, agent_count: int = 4):
+        self.agent_count = agent_count
+        self.agent_buffers = [
+            AgentRecoveryTeacherBuffer() for _ in range(agent_count)
+        ]
+
+    def add(self, agent_id: int, obs, action) -> None:
+        if not 0 <= int(agent_id) < self.agent_count:
+            raise ValueError(f"agent_id={agent_id} is outside recovery buffer")
+        self.agent_buffers[int(agent_id)].add(obs, action)
+
+    def __len__(self):
+        return sum(len(buffer) for buffer in self.agent_buffers)
+
+    def clear(self):
+        for buffer in self.agent_buffers:
+            buffer.clear()
+
+
 class _SingleAgentPPOTrainer:
     """1 つの ActorCritic モデルを学習させるための実装。"""
 
@@ -304,6 +361,60 @@ class _SingleAgentPPOTrainer:
         )
         data["advantages"] = normalize_advantages_tensor(data["advantages"])
         return self._update_tensors(data)
+
+    def update_recovery(self, buffer: AgentRecoveryTeacherBuffer) -> Dict[str, float]:
+        if len(buffer) == 0:
+            return {
+                "recovery_loss": 0.0,
+                "recovery_cont_loss": 0.0,
+                "recovery_fire_loss": 0.0,
+                "recovery_examples": 0.0,
+            }
+
+        data = buffer.tensors(self.device)
+        count = data["obs"].shape[0]
+        indices = np.arange(count)
+        stats = {
+            "recovery_loss": 0.0,
+            "recovery_cont_loss": 0.0,
+            "recovery_fire_loss": 0.0,
+            "recovery_examples": float(count),
+        }
+        updates = 0
+        batch_size = max(1, int(self.config.recovery_batch_size))
+
+        for _ in range(max(1, int(self.config.recovery_update_epochs))):
+            np.random.shuffle(indices)
+            for start in range(0, count, batch_size):
+                batch_idx = torch.as_tensor(
+                    indices[start : start + batch_size],
+                    device=self.device,
+                )
+                obs = data["obs"][batch_idx]
+                target_actions = data["actions"][batch_idx]
+                mean, _, fire_logits, _ = self.model.forward(obs)
+                env_cont_actions = torch.tanh(mean)
+                cont_loss = F.mse_loss(env_cont_actions, target_actions[:, :2])
+                fire_loss = F.binary_cross_entropy_with_logits(
+                    fire_logits.squeeze(-1),
+                    target_actions[:, 2],
+                )
+                loss = float(self.config.recovery_bc_coef) * (cont_loss + fire_loss)
+
+                self.optimizer.zero_grad()
+                loss.backward()
+                nn.utils.clip_grad_norm_(self.model.parameters(), self.config.max_grad_norm)
+                self.optimizer.step()
+
+                stats["recovery_loss"] += float(loss.detach().cpu())
+                stats["recovery_cont_loss"] += float(cont_loss.detach().cpu())
+                stats["recovery_fire_loss"] += float(fire_loss.detach().cpu())
+                updates += 1
+
+        if updates:
+            for key in ("recovery_loss", "recovery_cont_loss", "recovery_fire_loss"):
+                stats[key] /= updates
+        return stats
 
     def _update_tensors(self, data: Dict[str, torch.Tensor]) -> Dict[str, float]:
         count = data["obs"].shape[0]
@@ -435,6 +546,22 @@ class PPOTrainer:
             for agent_id, agent in enumerate(self.agents)
         ]
         stats = self._mean_stats(per_agent_stats)
+        for agent_id, agent_stats in enumerate(per_agent_stats):
+            for key, value in agent_stats.items():
+                stats[f"agent_{agent_id}_{key}"] = float(value)
+        return stats
+
+    def update_recovery(self, buffer: RecoveryTeacherBuffer) -> Dict[str, float]:
+        if buffer.agent_count != self.agent_count:
+            raise ValueError(
+                f"recovery buffer agent_count={buffer.agent_count} does not match trainer agent_count={self.agent_count}"
+            )
+        per_agent_stats = [
+            agent.update_recovery(buffer.agent_buffers[agent_id])
+            for agent_id, agent in enumerate(self.agents)
+        ]
+        stats = self._mean_stats(per_agent_stats)
+        stats["recovery_examples_total"] = float(len(buffer))
         for agent_id, agent_stats in enumerate(per_agent_stats):
             for key, value in agent_stats.items():
                 stats[f"agent_{agent_id}_{key}"] = float(value)

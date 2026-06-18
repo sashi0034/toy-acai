@@ -1,5 +1,7 @@
 cmake_minimum_required(VERSION 3.16)
 
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
 project(toy-acai-linux-python LANGUAGES CXX)
 
 include("${CMAKE_CURRENT_LIST_DIR}/../linux/FindSiv3D.cmake")

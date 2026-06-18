@@ -18,6 +18,9 @@ MAX_SPEED = 360.0
 RENDER_INTERVAL = 0.1
 
 SIMULATION_STEPS_PER_SECOND = 60
+RULE_TURN_SIMILAR_DURATION_STEPS = int(2.0 * SIMULATION_STEPS_PER_SECOND)
+RULE_TURN_PAUSE_STEPS = int(0.5 * SIMULATION_STEPS_PER_SECOND)
+RULE_TURN_INPUT_THRESHOLD = 0.15
 RECOVERY_ROLLBACK_STEPS = int(1.5 * SIMULATION_STEPS_PER_SECOND)
 RECOVERY_SEGMENT_STEPS = int(0.5 * SIMULATION_STEPS_PER_SECOND)
 RECOVERY_SEGMENT_COUNT = 4
@@ -126,6 +129,47 @@ class RuleBasedOpponent:
 
     def __init__(self, team_id: int = TEAM_RULE):
         self.team_id = team_id
+        self._similar_turn_steps: Dict[int, int] = {}
+        self._turn_pause_remaining: Dict[int, int] = {}
+        self._turn_direction_sign: Dict[int, int] = {}
+
+    def reset(self) -> None:
+        self._similar_turn_steps.clear()
+        self._turn_pause_remaining.clear()
+        self._turn_direction_sign.clear()
+
+    def _apply_turn_pause_rule(self, fighter_idx: int, turn: float) -> float:
+        pause_remaining = self._turn_pause_remaining.get(fighter_idx, 0)
+        if pause_remaining > 0:
+            self._turn_pause_remaining[fighter_idx] = pause_remaining - 1
+            self._similar_turn_steps[fighter_idx] = 0
+            self._turn_direction_sign[fighter_idx] = 0
+            return 0.0
+
+        turn_sign = 0
+        if abs(turn) >= RULE_TURN_INPUT_THRESHOLD:
+            turn_sign = 1 if turn > 0.0 else -1
+
+        previous_sign = self._turn_direction_sign.get(fighter_idx, 0)
+        if turn_sign != 0 and turn_sign == previous_sign:
+            similar_steps = self._similar_turn_steps.get(fighter_idx, 0) + 1
+        elif turn_sign != 0:
+            similar_steps = 1
+        else:
+            similar_steps = 0
+
+        self._similar_turn_steps[fighter_idx] = similar_steps
+        self._turn_direction_sign[fighter_idx] = turn_sign
+
+        if similar_steps >= RULE_TURN_SIMILAR_DURATION_STEPS:
+            self._similar_turn_steps[fighter_idx] = 0
+            self._turn_direction_sign[fighter_idx] = 0
+            self._turn_pause_remaining[fighter_idx] = max(
+                RULE_TURN_PAUSE_STEPS - 1, 0
+            )
+            return 0.0
+
+        return turn
 
     def actions(self, obs: Dict[str, np.ndarray], fighter_count: int) -> np.ndarray:
         fighters = np.asarray(obs["fighters"], dtype=np.float64)
@@ -142,16 +186,17 @@ class RuleBasedOpponent:
 
             actions[i, 0] = 0.55
             if len(target_indices) == 0:
-                actions[i, 1] = _edge_turn(fighter, field_w, field_h)
-                continue
+                turn = _edge_turn(fighter, field_w, field_h)
+            else:
+                deltas = fighters[target_indices, 2:4] - fighter[2:4]
+                distances = np.sum(deltas * deltas, axis=1)
+                target_delta = deltas[int(np.argmin(distances))]
+                target_yaw = math.atan2(float(target_delta[1]), float(target_delta[0]))
+                yaw_delta = _angle_delta(target_yaw, float(fighter[4]))
+                turn = float(np.clip(yaw_delta / 0.7, -1.0, 1.0))
+                actions[i, 2] = 1.0 if abs(yaw_delta) < 0.35 else 0.0
 
-            deltas = fighters[target_indices, 2:4] - fighter[2:4]
-            distances = np.sum(deltas * deltas, axis=1)
-            target_delta = deltas[int(np.argmin(distances))]
-            target_yaw = math.atan2(float(target_delta[1]), float(target_delta[0]))
-            yaw_delta = _angle_delta(target_yaw, float(fighter[4]))
-            actions[i, 1] = np.clip(yaw_delta / 0.7, -1.0, 1.0)
-            actions[i, 2] = 1.0 if abs(yaw_delta) < 0.35 else 0.0
+            actions[i, 1] = self._apply_turn_pause_rule(i, turn)
 
         return actions
 
@@ -809,6 +854,7 @@ class ToyAcaiPPOEnv:
     def reset(self) -> np.ndarray:
         # シミュレータを初期化し、生の状態ではなく学習用の観測ベクトルを返す。
         self.step_count = 0
+        self.opponent.reset()
         self.last_obs = self.env.reset()
         self._apply_random_start_positions()
         self._reset_movement_history()

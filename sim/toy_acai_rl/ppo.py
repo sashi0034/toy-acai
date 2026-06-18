@@ -1,11 +1,17 @@
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from torch.distributions import Bernoulli, Normal
+
+
+# 連続行動の探索ノイズを前 step からどれだけ残すかの AR(1) 相関係数。
+# 0 にすると毎 step 独立サンプルになる。
+CONTINUOUS_NOISE_CORRELATION = 0.99
 
 
 class ActorCritic(nn.Module):
@@ -50,6 +56,7 @@ class ActorCritic(nn.Module):
         obs: torch.Tensor,
         deterministic: bool = False,
         fire_threshold: float = 0.5,
+        exploration_noise: Optional[torch.Tensor] = None,
     ):
         mean, log_std, fire_logits, value = self.forward(obs)
         if deterministic:
@@ -58,7 +65,10 @@ class ActorCritic(nn.Module):
             fire = (torch.sigmoid(fire_logits) >= fire_threshold).float()
         else:
             # 学習時は確率的に行動する。いろいろ試すことで、後から良い行動を強められる。
-            raw_cont = Normal(mean, log_std.exp()).sample()
+            if exploration_noise is None:
+                raw_cont = Normal(mean, log_std.exp()).sample()
+            else:
+                raw_cont = mean + log_std.exp() * exploration_noise
             fire = Bernoulli(logits=fire_logits).sample()
         action = torch.cat([raw_cont, fire], dim=-1)
         # PPO の確率計算には tanh 前の raw_cont を使い、
@@ -102,6 +112,9 @@ class PPOConfig:
     eval_fire_threshold: float = 0.15
     hidden_dim: int = 256
     log_std_init: float = -0.8
+    recovery_bc_coef: float = 0.5
+    recovery_update_epochs: int = 1
+    recovery_batch_size: int = 128
 
 
 class AgentRolloutBuffer:
@@ -219,6 +232,59 @@ class RolloutBuffer:
             buffer.clear()
 
 
+class AgentRecoveryTeacherBuffer:
+    """1 機ぶんの recovery teacher state/action ペアを保持する。"""
+
+    def __init__(self):
+        self.observations = []
+        self.actions = []
+
+    def add(self, obs, action):
+        self.observations.append(np.asarray(obs, dtype=np.float32))
+        self.actions.append(np.asarray(action, dtype=np.float32))
+
+    def __len__(self):
+        return len(self.actions)
+
+    def clear(self):
+        self.observations.clear()
+        self.actions.clear()
+
+    def tensors(self, device: torch.device) -> Dict[str, torch.Tensor]:
+        return {
+            "obs": torch.as_tensor(
+                np.asarray(self.observations, dtype=np.float32),
+                device=device,
+            ),
+            "actions": torch.as_tensor(
+                np.asarray(self.actions, dtype=np.float32),
+                device=device,
+            ),
+        }
+
+
+class RecoveryTeacherBuffer:
+    """Recovery rollout で見つけた教師行動を agent ごとに分けてためる。"""
+
+    def __init__(self, agent_count: int = 4):
+        self.agent_count = agent_count
+        self.agent_buffers = [
+            AgentRecoveryTeacherBuffer() for _ in range(agent_count)
+        ]
+
+    def add(self, agent_id: int, obs, action) -> None:
+        if not 0 <= int(agent_id) < self.agent_count:
+            raise ValueError(f"agent_id={agent_id} is outside recovery buffer")
+        self.agent_buffers[int(agent_id)].add(obs, action)
+
+    def __len__(self):
+        return sum(len(buffer) for buffer in self.agent_buffers)
+
+    def clear(self):
+        for buffer in self.agent_buffers:
+            buffer.clear()
+
+
 class _SingleAgentPPOTrainer:
     """1 つの ActorCritic モデルを学習させるための実装。"""
 
@@ -232,6 +298,26 @@ class _SingleAgentPPOTrainer:
             log_std_init=config.log_std_init,
         ).to(device)
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=config.lr)
+        self._continuous_noise: Optional[torch.Tensor] = None
+
+    def reset_exploration_noise(self) -> None:
+        self._continuous_noise = None
+
+    def _next_exploration_noise(self, shape: torch.Size) -> torch.Tensor:
+        # z_t は標準正規のまま AR(1) で時間相関を持たせる。
+        # raw action へは mean + std * z_t として反映するため、各 step の周辺分布は従来と同じ。
+        correlation = float(np.clip(CONTINUOUS_NOISE_CORRELATION, 0.0, 0.999))
+        innovation = torch.randn(shape, dtype=torch.float32, device=self.device)
+        if correlation <= 0.0:
+            self._continuous_noise = None
+            return innovation
+        if self._continuous_noise is None or self._continuous_noise.shape != shape:
+            noise = innovation
+        else:
+            innovation_scale = float(np.sqrt(max(0.0, 1.0 - correlation * correlation)))
+            noise = correlation * self._continuous_noise + innovation_scale * innovation
+        self._continuous_noise = noise.detach()
+        return noise
 
     def act(self, observation: np.ndarray, deterministic: bool = False):
         # モデルは batch 次元つきのテンソルを受け取るため、1 機ぶんの観測にも [None, :] を付ける。
@@ -241,10 +327,14 @@ class _SingleAgentPPOTrainer:
             device=self.device,
         )
         with torch.no_grad():
+            exploration_noise = None
+            if not deterministic:
+                exploration_noise = self._next_exploration_noise(torch.Size((1, 2)))
             actions, env_actions, log_probs, _, values = self.model.act(
                 obs_tensor,
                 deterministic=deterministic,
                 fire_threshold=self.config.eval_fire_threshold,
+                exploration_noise=exploration_noise,
             )
         return (
             actions[0].cpu().numpy(),
@@ -271,6 +361,60 @@ class _SingleAgentPPOTrainer:
         )
         data["advantages"] = normalize_advantages_tensor(data["advantages"])
         return self._update_tensors(data)
+
+    def update_recovery(self, buffer: AgentRecoveryTeacherBuffer) -> Dict[str, float]:
+        if len(buffer) == 0:
+            return {
+                "recovery_loss": 0.0,
+                "recovery_cont_loss": 0.0,
+                "recovery_fire_loss": 0.0,
+                "recovery_examples": 0.0,
+            }
+
+        data = buffer.tensors(self.device)
+        count = data["obs"].shape[0]
+        indices = np.arange(count)
+        stats = {
+            "recovery_loss": 0.0,
+            "recovery_cont_loss": 0.0,
+            "recovery_fire_loss": 0.0,
+            "recovery_examples": float(count),
+        }
+        updates = 0
+        batch_size = max(1, int(self.config.recovery_batch_size))
+
+        for _ in range(max(1, int(self.config.recovery_update_epochs))):
+            np.random.shuffle(indices)
+            for start in range(0, count, batch_size):
+                batch_idx = torch.as_tensor(
+                    indices[start : start + batch_size],
+                    device=self.device,
+                )
+                obs = data["obs"][batch_idx]
+                target_actions = data["actions"][batch_idx]
+                mean, _, fire_logits, _ = self.model.forward(obs)
+                env_cont_actions = torch.tanh(mean)
+                cont_loss = F.mse_loss(env_cont_actions, target_actions[:, :2])
+                fire_loss = F.binary_cross_entropy_with_logits(
+                    fire_logits.squeeze(-1),
+                    target_actions[:, 2],
+                )
+                loss = float(self.config.recovery_bc_coef) * (cont_loss + fire_loss)
+
+                self.optimizer.zero_grad()
+                loss.backward()
+                nn.utils.clip_grad_norm_(self.model.parameters(), self.config.max_grad_norm)
+                self.optimizer.step()
+
+                stats["recovery_loss"] += float(loss.detach().cpu())
+                stats["recovery_cont_loss"] += float(cont_loss.detach().cpu())
+                stats["recovery_fire_loss"] += float(fire_loss.detach().cpu())
+                updates += 1
+
+        if updates:
+            for key in ("recovery_loss", "recovery_cont_loss", "recovery_fire_loss"):
+                stats[key] /= updates
+        return stats
 
     def _update_tensors(self, data: Dict[str, torch.Tensor]) -> Dict[str, float]:
         count = data["obs"].shape[0]
@@ -352,6 +496,10 @@ class PPOTrainer:
             for _ in range(agent_count)
         ]
 
+    def reset_exploration_noise(self) -> None:
+        for agent in self.agents:
+            agent.reset_exploration_noise()
+
     def act(self, observations: np.ndarray, deterministic: bool = False):
         # observations は [agent_count, obs_dim]。各行を各機の trainer に渡す。
         observations = np.asarray(observations, dtype=np.float32)
@@ -398,6 +546,22 @@ class PPOTrainer:
             for agent_id, agent in enumerate(self.agents)
         ]
         stats = self._mean_stats(per_agent_stats)
+        for agent_id, agent_stats in enumerate(per_agent_stats):
+            for key, value in agent_stats.items():
+                stats[f"agent_{agent_id}_{key}"] = float(value)
+        return stats
+
+    def update_recovery(self, buffer: RecoveryTeacherBuffer) -> Dict[str, float]:
+        if buffer.agent_count != self.agent_count:
+            raise ValueError(
+                f"recovery buffer agent_count={buffer.agent_count} does not match trainer agent_count={self.agent_count}"
+            )
+        per_agent_stats = [
+            agent.update_recovery(buffer.agent_buffers[agent_id])
+            for agent_id, agent in enumerate(self.agents)
+        ]
+        stats = self._mean_stats(per_agent_stats)
+        stats["recovery_examples_total"] = float(len(buffer))
         for agent_id, agent_stats in enumerate(per_agent_stats):
             for key, value in agent_stats.items():
                 stats[f"agent_{agent_id}_{key}"] = float(value)

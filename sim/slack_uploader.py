@@ -8,7 +8,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
-from typing import Optional
+from typing import Dict, List, Optional
 
 
 SLACK_API = "https://slack.com/api"
@@ -18,6 +18,7 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Upload toy-acai GIF spool records to Slack from a login node.")
     parser.add_argument("--env-file", type=Path, default=Path(".env"))
     parser.add_argument("--spool", type=Path, default=None)
+    parser.add_argument("--spool-root", type=Path, default=Path("outputs/rl"))
     parser.add_argument("--poll-seconds", type=float, default=30.0)
     parser.add_argument("--once", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
@@ -253,6 +254,18 @@ def move_record(record_path: Path, destination_dir: Path) -> None:
     record_path.replace(destination_dir / record_path.name)
 
 
+def discover_spools(spool_root: Path) -> List[Path]:
+    if not spool_root.exists():
+        return []
+    return sorted(
+        slack_dir
+        for run_dir in spool_root.glob("run_*")
+        if run_dir.is_dir() and not run_dir.is_symlink()
+        for slack_dir in [run_dir / "slack"]
+        if slack_dir.is_dir()
+    )
+
+
 def process_once(spool: Path, token: str, channel_id: str, thread: SlackThread, dry_run: bool) -> int:
     pending = spool / "pending"
     sent = spool / "sent"
@@ -272,22 +285,43 @@ def process_once(spool: Path, token: str, channel_id: str, thread: SlackThread, 
     return count
 
 
+def process_all_once(
+    spools: List[Path],
+    token: str,
+    channel_id: str,
+    threads: Dict[Path, SlackThread],
+    dry_run: bool,
+) -> int:
+    count = 0
+    for spool in spools:
+        resolved_spool = spool.resolve()
+        thread = threads.get(resolved_spool)
+        if thread is None:
+            thread = SlackThread(spool, token, channel_id, dry_run)
+            threads[resolved_spool] = thread
+        count += process_once(spool, token, channel_id, thread, dry_run)
+    return count
+
+
 def main():
     args = parse_args()
     load_dotenv(args.env_file)
-    spool = args.spool
-    if spool is None:
-        spool = Path(os.environ.get("TOY_ACAI_SLACK_SPOOL", "outputs/rl/default/slack"))
     token = os.environ.get("SLACK_BOT_TOKEN")
     channel_id = os.environ.get("SLACK_CHANNEL_ID")
     if not args.dry_run and (not token or not channel_id):
         raise SystemExit("SLACK_BOT_TOKEN and SLACK_CHANNEL_ID are required unless --dry-run is used")
     token = token or "dry-run-token"
     channel_id = channel_id or "dry-run-channel"
-    thread = SlackThread(spool, token, channel_id, args.dry_run)
+    threads: Dict[Path, SlackThread] = {}
 
     while True:
-        processed = process_once(spool, token, channel_id, thread, args.dry_run)
+        if args.spool is not None:
+            spools = [args.spool]
+        else:
+            # 複数の学習 run が同時に動くと latest は最後に起動した run だけを指す。
+            # 親ディレクトリ配下の run_*/slack を毎回列挙して、各 run の pending を拾う。
+            spools = discover_spools(args.spool_root)
+        processed = process_all_once(spools, token, channel_id, threads, args.dry_run)
         if args.once:
             print(f"processed {processed} records")
             return

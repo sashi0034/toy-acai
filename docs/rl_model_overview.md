@@ -15,13 +15,15 @@
 学習は以下のサイクルで進みます。
 
 1. `ToyAcaiPPOEnv.reset()` で C++ シミュレータを初期化する。
-2. C++ の生状態 `fighters` / `missiles` / `hit_events` を、`build_agent_observations()` でニューラルネット入力用の固定長ベクトルに変換する。
-3. `PPOTrainer.act()` が学習対象の Blue 機それぞれの行動を出す。
-4. Red 4 機は `RuleBasedOpponent` が最近傍の生存 Blue 機へ向かって旋回・射撃する。
-5. `ToyAcaiPPOEnv.step()` が Blue の行動と Red の行動をまとめて C++ シミュレータへ渡す。
-6. 次状態、各 Blue 機の報酬、終了判定を受け取る。
-7. 観測、行動、行動確率、報酬、価値推定を `RolloutBuffer` に蓄積する。
-8. `rollout_steps` 以上たまったら、GAE で advantage / return を計算し、PPO でネットワークを更新する。
+2. 学習開始位置をランダム化し、Blue / Red ともに戦場幅の 8%〜92% の範囲で `x` / `y` / `yaw` を毎エピソード変える。active な Blue / Red 機の最短距離が 240px 未満なら、両チームの開始位置をまとめてやり直す（最大 4096 回。それでも満たせなければ最後の位置を使う）。
+3. C++ の生状態 `fighters` / `missiles` / `hit_events` を、`build_agent_observations()` でニューラルネット入力用の固定長ベクトルに変換する。
+4. `PPOTrainer.act()` が学習対象の Blue 機それぞれの行動を出す。
+5. 現在のカリキュラム段階で有効な Red 機は `RuleBasedOpponent` が最近傍の生存 Blue 機へ向かって旋回・射撃する。
+6. `ToyAcaiPPOEnv.step()` が Blue の行動と Red の行動をまとめて C++ シミュレータへ渡す。
+7. 次状態、各 Blue 機の報酬、終了判定を受け取る。
+8. 観測、行動、行動確率、報酬、価値推定を `RolloutBuffer` に蓄積する。
+9. ミサイル命中で Blue 機が撃墜された場合、必要なら recovery teacher を探索して `RecoveryTeacherBuffer` に蓄積する。
+10. `rollout_steps` 以上たまったら、GAE で advantage / return を計算し、PPO でネットワークを更新する。recovery teacher が溜まっている場合は、同じタイミングで小さな behavior cloning 更新も行う。
 
 ## 学習対象と対戦相手
 
@@ -35,8 +37,43 @@ Red チームは `TEAM_RULE = 1` で、現在は学習せず、単純なルー�
 - 目標方向との角度差をもとに `turn` を `[-1, 1]` へクリップして出す。
 - 角度差が `0.35 rad` 未満なら `fire = 1.0` にする。
 - 目標がいない場合や端に寄った場合は、戦場中心へ戻る向きに旋回する。
+- 同じ向きの回転入力 (`|turn| >= 0.15`) が 2.0 秒以上続いた場合、0.5 秒間 `turn = 0` に固定する。シミュレーションは 60 step/秒なので、閾値は 150 step、停止は 30 step です。
 
 つまり現状の学習は「固定ルールの Red に対して、Blue がどう動けば勝てるか」を学ぶ self-play ではない PPO です。
+
+## 開始位置ランダム化
+
+学習では、エピソードごとに `ToyAcaiPPOEnv.reset()` が C++ シミュレータを固定配置へ reset した直後、Python 側で active な Blue / Red 機の開始 pose をランダムに上書きします。
+
+Blue / Red ともに戦場幅の 8%〜92% の範囲から `x` を選びます。`y` は上下端を避けた範囲を active 機数ぶんのスロットに分け、同じチーム内の機体が開始直後に重なりにくいようにしています。`yaw` は Blue が概ね右向き、Red が概ね左向きになるようにしつつ、小さな jitter を入れます。
+
+active な Blue / Red 機の最短距離が 400px 未満なら、両チームの開始位置をまとめて再サンプルします。
+
+## カリキュラム学習
+
+学習は `sim/toy_acai_rl/curriculum.py` の設定に従い、Red の有効機数を段階的に増やすカリキュラムで進みます。
+現在のステージは次の 4 段階です。
+
+```text
+Red 1 機 -> Red 2 機 -> Red 3 機 -> Red 4 機
+```
+
+Blue 側の学習対象は `CURRICULUM_LEARNER_COUNT = 1` で、通常は先頭の Blue 1 機だけを学習します。
+C++ シミュレータ上の最大機数は Blue 4 機 + Red 4 機のままですが、`ToyAcaiPPOEnv` に渡す `learner_count` / `opponent_count` で有効機数を絞ります。
+
+ステージ昇格判定は次の通りです。
+
+- `CURRICULUM_EVAL_EVERY = 200` エピソードごとに、現在ステージの Red 機数で決定論的評価を行う。
+- 評価は `CURRICULUM_PROMOTION_EVALS = 20` 回実行する。
+- `CURRICULUM_PROMOTION_WINS = 14` 勝以上なら、次のステージへ進む。
+- 勝率条件を満たさなくても、同じステージで `CURRICULUM_STAGE_MAX_EPISODES = 10000` エピソードに達したら強制的に次へ進む。
+- 最終ステージの Red 4 機では、それ以上の昇格は行わない。
+
+昇格すると rollout buffer をクリアし、学習環境を新しい `opponent_count` で作り直します。
+評価グラフ用の履歴もステージごとにリセットされます。
+
+ログには `curriculum_stage`、`stage_episode`、`opponent_count` が入り、昇格判定は `curriculum_metrics.jsonl`、昇格イベントは `curriculum_events.jsonl` に出力されます。
+checkpoint には現在の `curriculum_stage`、`opponent_count`、`stage_episode` も保存されるため、`--resume-checkpoint` で再開すると同じステージから続きます。
 
 ## シミュレータ状態
 
@@ -62,7 +99,7 @@ C++ 側の `BattlefieldEnv` は、各 step 後に Python へ次の情報を返�
 
 ### `missiles`
 
-形状は `[ミサイル数, 8]` です。
+形状は `[ミサイル数, 9]` です。
 
 | index | 意味 |
 | --- | --- |
@@ -74,6 +111,7 @@ C++ 側の `BattlefieldEnv` は、各 step 後に Python へ次の情報を返�
 | 5 | lockLostTime |
 | 6 | teamId。どちらのチームが撃ったか |
 | 7 | targetFighterIndex |
+| 8 | missileId。C++ 側で発射ごとに採番される一意 ID |
 
 ### `hit_events`
 
@@ -100,8 +138,21 @@ C++ 側の `BattlefieldEnv` は、各 step 後に Python へ次の情報を返�
 
 C++ 側では `acceleration` と `turn` は `[-1, 1]` に clamp され、`fire` は `0.5` 以上なら発射入力として扱われます。
 
+Recovery teacher の探索では方策ネットワークは使わず、`fire=0` 固定で次の 4 種類だけを候補入力にします。
+
+- 左急旋回 + 最大加速: `[1, -1, 0]`
+- 左急旋回 + 最大減速: `[-1, -1, 0]`
+- 右急旋回 + 最大加速: `[1, 1, 0]`
+- 右急旋回 + 最大減速: `[-1, 1, 0]`
+
 連続行動は正規分布からサンプルし、PPO の log probability 計算には `tanh` 前の `raw` 値を保存します。
 環境へ渡すときだけ `tanh` で範囲内に収めます。
+
+学習時の `acceleration` / `turn` の探索ノイズは、毎 step 独立ではなく時間相関を持つようにしています。
+各 step で観測を取り直して方策の平均と価値は再計算しますが、正規化ノイズ `z_t` だけを `z_t = rho * z_{t-1} + sqrt(1 - rho^2) * eps_t` で更新し、`raw = mean + std * z_t` として使います。
+これにより action repeat は使わず、数フレーム同じ方向のランダムな加速・旋回入力が残りやすくなります。
+`rho` は `0.99` 固定です。
+episode の先頭ではノイズ状態をリセットし、評価時 (`deterministic=True`) はこの探索ノイズを使いません。
 
 ## 観測入力
 
@@ -137,7 +188,7 @@ total               138
 
 ### 他機特徴量 7 機 x 11 次元
 
-自分以外の 7 機について、敵を先、味方を後に並べて入れます。
+自分以外の 7 機について、敵を先、味方を後にし、それぞれ生存機を距離順、撃墜済み機体を後ろに並べて入れます。
 各機の特徴量は 11 次元です。
 
 | index | 内容 |
@@ -262,12 +313,31 @@ Blue の生存数も少し見ますが、優先度は Red の残数のほうが�
 
 | 項目 | デフォルト | 内容 |
 | --- | ---: | --- |
-| 生存報酬 | `0.0003` / step | 戦場内で生きている Blue 機に加点 |
-| 戦力差報酬 | `0.002 * (blue_alive_ratio - red_alive_ratio)` / step | 生存率で優勢なら加点、劣勢なら減点 |
-| 撃墜報酬 | `1.0` | Red を撃墜した Blue 機本人へ加点 |
-| 自機損失ペナルティ | `-1.0` | 前 step 生存、今 step 非生存になった Blue 本人へ減点 |
+| 生存報酬 | 無効 | 実験用に一旦コメントアウト |
+| 場外ペナルティ | `-0.03` / step | 戦場外に出ている Blue 機本人へ減点 |
+| ミサイル追尾ペナルティ | 最大 `-0.05` / 敵ミサイル / step | 敵ミサイルが Blue 機方向を向いている間、距離が近いほど強く本人へ減点 |
+| 最近傍敵への向き報酬 | `+0.02` / step | 最近傍の生存 Red に Blue 機が向いている間、本人へ加点 |
+| 最近傍敵からの向きペナルティ | `-0.02` / step | 最近傍の生存 Red が Blue 機へ向いている間、同量を本人へ減点 |
+| 低移動ペナルティ | `-0.02` / step | 直近 1 秒の移動距離が `100px` 以下の Blue 機本人へ減点 |
+| ミサイル発射報酬 | `+1.0` | 直前観測で射界内に生存 Red がいる状態で、有効にミサイルを発射できた Blue 機本人へ加点 |
+| 射界内 fire 入力報酬 | `+0.01` / step | 直前観測で自機の射界内に生存 Red がいる間、`fire >= 0.5` の入力を出している Blue 機本人へ加点 |
+| 射界外 fire 入力ペナルティ | `-0.01` / step | 直前観測で射界内に生存 Red がいないのに `fire >= 0.5` の入力を出している Blue 機本人へ減点 |
+| 撃墜報酬 | `10.0` | Red を撃墜した Blue 機本人へ加点 |
+| 自機損失ペナルティ | `-10.0` | 前 step 生存、今 step 非生存になった Blue 本人へ減点 |
 
-終端スコアがチーム勝敗を教え、補助報酬が「生き残る」「自分で撃墜する」「自分が撃墜されない」という中間目標を教える構造です。
+終端スコアがチーム勝敗を教え、補助報酬が「場外へ出続けない」「追尾中の敵ミサイルから離れる」「最近傍敵へ機首を向け、逆に向けられ続ける状況を避ける」「停止に近い動きを避ける」「敵に向けて撃つ・撃墜する」「自分が撃墜されない」という中間目標を教える構造です。
+
+撃墜報酬 `10.0` と自機損失ペナルティ `-10.0` は、毎 step の連続シグナルより大きく、実際の撃墜と被撃墜を強く見ます。
+
+ミサイル発射報酬は、発射前の観測で自機 yaw から `0.85 rad` 以内に生存 Red がいる場合だけ加点します。命中までは要求しないため、敵へ向けて撃つ行動を早めに教えつつ、敵が後方にいる状態で cooldown だけ増えたような発射イベントには加点しません。
+
+射界内 fire 入力報酬と射界外 fire 入力ペナルティは、ミサイル発射報酬と同じ射界判定 (`0.85 rad`) を使います。実際に発射できたかどうかではなく、その step の `fire` 入力 (`>= 0.5`) に対して、毎 step の小さな shaping を与えます。
+
+ミサイル追尾ペナルティは、敵ミサイル位置から Blue 機への角度とミサイル yaw の差が `0.85 rad` 以下なら発火します。1 発あたりの減点は `0.05 * 200 / max(distance, 200)` を `0.0..0.05` に clamp した値です。近距離の追尾を強く罰しつつ、遠距離や角度が外れたミサイルでは小さく、または 0 になります。
+
+最近傍敵への向き報酬と最近傍敵からの向きペナルティは、どちらも同じ `0.85 rad` の角度閾値と同じ `0.02` の量を使います。自機と最近傍 Red が互いに向き合う場合は、この 2 成分が同量で打ち消し合います。
+
+低移動ペナルティは、Python バインド版シミュレータの固定更新間隔 `1/60` 秒を使い、`ToyAcaiPPOEnv` が保持する 60 step 分の位置履歴から直近 1 秒の移動距離を計算します。履歴が 1 秒ぶん貯まるまではペナルティを出さず、生存かつ戦場内の Blue 機だけを対象にします。
 
 ## PPO の学習方法
 
@@ -286,6 +356,20 @@ PPO の実装は `sim/toy_acai_rl/ppo.py` にあります。
 
 複数機を扱うため、`RolloutBuffer` は機体ごとの `AgentRolloutBuffer` を持ちます。
 更新時は各機の buffer で対応する個別モデルを更新します。
+
+### recovery teacher buffer
+
+Blue 機が敵ミサイル命中で死亡した step では、C++ の `BattlefieldEnv.snapshot()` で保存しておいた通常 env の状態履歴を使い、死亡時点の 90 フレーム前へ rollback します。
+探索 rollout は通常の学習 env とは別に作った描画なし env に `restore_snapshot()` して実行するため、学習中の本体 env の状態は破壊しません。
+
+rollback 状態から 30 フレームごとの 4 区間に分け、各区間に 4 種類の極端入力を割り当てるので、候補は `4^4 = 256` 通りです。
+各候補を最後まで rollout し、対象 Blue 機が生存していた候補だけを採用候補にします。
+複数候補が生存した場合は、敵ミサイルからの最小距離、最終距離、場外時間、戦況の順でスコアを比べます。
+
+最良候補が見つかった場合、その候補の最初の 30 フレーム分だけを `RecoveryTeacherBuffer` に保存します。
+保存するのは `build_agent_observations()` が返す観測と、探索で使った環境入力 `[acceleration, turn, fire]` です。
+PPO 更新時に recovery buffer が空でなければ、方策の `tanh(mean)` を teacher の連続入力へ近づけ、`fire` logit は teacher の `fire=0` に近づける behavior cloning loss を 1 epoch だけ追加で流します。
+強さは `--recovery-bc-coef` で調整でき、デフォルトは `0.5` です。
 
 ### GAE
 
@@ -354,6 +438,10 @@ loss = policy_loss + value_coef * value_loss - entropy_coef * entropy
 評価では GIF を出力できます。
 学習時の探索ノイズを切ることで、その時点の方策が安定してどれくらい勝てるかを見ます。
 
+GIF の各フレームには、Slack で見たときに方策の動きを把握しやすいように、
+青チーム各機の critic 値とそのフレーム時点までの累計報酬を `B0 critic=+1.234 reward=+0.789` の形でオーバーレイ表示します。
+critic はその step で観測した状態 \(V(s)\) の推定値、reward は `auxiliary_agent_rewards()` と終端スコアを合算した step 増分をエピソード開始から該当フレームまで足し上げたエージェント毎の累計値です。
+
 ログには主に次の指標が出ます。
 
 - `reward`: 1 エピソードの平均報酬和
@@ -363,6 +451,16 @@ loss = policy_loss + value_coef * value_loss - entropy_coef * entropy
 - `fire_input_rate`: `fire` を出した割合
 - `mean_accel` / `mean_turn` / `mean_abs_turn`: 行動の平均
 - `policy_loss` / `value_loss` / `entropy` / `approx_kl` / `clip_fraction`: PPO 更新の統計
+
+### 補助報酬成分のエピソード累計
+
+`auxiliary_agent_rewards()` は step 単位で `missile_tracking_penalty` / `nearest_enemy_facing_reward` / `nearest_enemy_facing_penalty` / `low_movement_penalty` / `kill_reward` / `missile_fire_reward` / `fire_input_in_range_reward` / `fire_input_out_of_range_penalty` / `out_of_bounds_penalty` / `death_penalty` / `blue_kills` / `blue_losses` / `hit_events` / `survival_reward` を返します。
+ログ用の集計はこれらを step 毎に積み上げ、`train_metrics.jsonl` / `eval_metrics.jsonl` ではエピソード合計として記録します。
+`mean_movement_distance_1s` だけは step 平均として 1 エピソード内の平均値を出します。
+そのため例えば「低移動ペナルティがどれくらい発火したか」は `low_movement_penalty / AUX_LOW_MOVEMENT_PENALTY_PER_STEP` で確認できます。
+
+実装上は `train_ppo.EpisodeInfoAggregator` がこの集計を担当し、`run_episode()` が step ごとに `add(info)` を呼び、ループ終了後に `apply(last_info)` で最終 step 由来の値(`terminal_score` / `outcome` / `blue_alive` / `red_alive`)と合体させています。
+したがって最終 step だけに依存するキー(終端スコアや勝敗)はそのまま最後の値を、step 増分のキーはエピソード累計をログに残します。
 
 ## checkpoint と再開
 
@@ -374,8 +472,15 @@ loss = policy_loss + value_coef * value_loss - entropy_coef * entropy
 - PPO config
 - episode
 - obs_dim
+- curriculum_stage / opponent_count / stage_episode
 
-再開時は `--resume-checkpoint` を指定します。
+学習を起動するたびに、`--out-dir` (既定 `outputs/rl`) の下に `run_<timestamp>` ディレクトリが新規に作成され、その run 専用の `checkpoints/`、`media/`、`slack/`、`*.jsonl` がそこへ書き込まれます。
+これにより、過去の checkpoint や metrics は上書きされません。
+加えて、`outputs/rl/latest` の symlink が最新の run ディレクトリへ向け直されます。
+Slack uploader は既定で `outputs/rl/run_*/slack` を巡回するため、同時に複数の学習 run を動かしても各 run の Slack 投稿候補を拾えます。
+
+再開時は `--resume-checkpoint` を指定します (例: `outputs/rl/latest/checkpoints/ppo_latest.pt`)。
+再開ジョブの出力も新しい `run_<timestamp>` に書き出されるため、再開元の checkpoint やログは壊れません。
 観測設計を変えると `obs_dim` が変わるため、古い checkpoint はそのまま読み込めません。
 その場合は新規学習が必要です。
 

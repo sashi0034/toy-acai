@@ -1,5 +1,6 @@
 ﻿#pragma once
 #include <array>
+#include <cstdint>
 #include <vector>
 
 #include "BattlefieldParameters.h"
@@ -28,6 +29,7 @@ namespace toy_acai
         int teamId;
         int shooterFighterIndex;
         int targetFighterIndex;
+        std::uint64_t id;
     };
 
     struct HitEvent
@@ -43,6 +45,7 @@ namespace toy_acai
         std::array<FighterState, TeamCount * TeamFighterCount> fighters;
         std::vector<MissileState> missiles;
         std::vector<HitEvent> hitEvents;
+        std::uint64_t nextMissileId = 0;
         Vec2 screenSize;
         RectF battlefieldArea;
     };

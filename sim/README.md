@@ -47,30 +47,36 @@ BUILD_PARALLELISM=1 ./linux-python/build-apptainer.sh
 ./local-scripts/train-ppo.sh
 ```
 
+学習を実行するたびに、`TOY_ACAI_OUTPUT_DIR` (既定では `outputs/rl`) の下に `run_<timestamp>` ディレクトリが新規作成されます。
+checkpoint や metrics、GIF はその run 専用ディレクトリに書き込まれるため、過去の結果が上書きされることはありません。
+最新の run ディレクトリには `outputs/rl/latest` という symlink が貼られます。
+Slack uploader は既定で `outputs/rl/run_*/slack` を巡回するため、複数の学習 run を同時に動かしても各 run の投稿候補を拾えます。
+
 チェックポイントから続ける場合は、例えば次のようにします:
 
 ```bash
-TOY_ACAI_RESUME_CHECKPOINT=outputs/rl/default/checkpoints/ppo_002000.pt \
+TOY_ACAI_RESUME_CHECKPOINT=outputs/rl/latest/checkpoints/ppo_002000.pt \
 ./local-scripts/train-ppo.sh
 ```
 
+再開時も新しい run ディレクトリへ書き出すため、元の run の checkpoint は保持されます。
+
 観測特徴量や報酬設計を変えた後は、新規学習してください。
 現在の学習はエピソード終端の `red_alive`、`blue_alive`、終了ステップから計算する勝敗スコアを主報酬にします。
-加えて各 Blue 機体に、step ごとの生存補助報酬、自機のミサイルで Red 機体を撃墜したときの本人補助報酬、自機が撃墜されたときの本人ペナルティを与えます。
+加えて各 Blue 機体に、場外に出ている間の本人ペナルティ、敵ミサイルが自機へ向いている間の距離依存ペナルティ、最近傍 Red へ向いている間の本人補助報酬、最近傍 Red から向かれている間の同量ペナルティ、直近 1 秒の移動距離が 100px 以下の本人ペナルティ、直前観測で射界内に生存 Red がいる状態で有効にミサイルを発射したときの本人補助報酬、自機のミサイルで Red 機体を撃墜したときの本人補助報酬、自機が撃墜されたときの本人ペナルティを与えます。
 実験用に、学習対象の Blue 機数は `TOY_ACAI_LEARNER_COUNT` で変更できます。現在の既定は 1 機です。敵 Red は 4 機のままです。
-`outputs/rl/default/checkpoints/ppo_latest.pt` は checkpoint 保存ごとにも更新されるため、途中終了後も直近の保存済み方策を参照できます。
+`outputs/rl/latest/checkpoints/ppo_latest.pt` は checkpoint 保存ごとにも更新されるため、途中終了後も直近の保存済み方策を参照できます。
 
 Slack 投稿が多すぎる場合は、まず `TOY_ACAI_RENDER_EVERY` を大きくしてください。
 これは「何エピソードごとに GIF を作って Slack 送信用にスプールするか」を決めます。
 例えば `TOY_ACAI_RENDER_EVERY=100` なら 100 エピソードごとに投稿候補が作られます。
 
-学習を固定初期配置の暗記に寄せすぎないため、`TOY_ACAI_RANDOM_START_STEPS` で reset 直後に短いランダム機動を入れます。
-また、`TOY_ACAI_ROLLOUT_STEPS` は小さめにすると PPO の更新頻度が上がります。
+`TOY_ACAI_ROLLOUT_STEPS` は小さめにすると PPO の更新頻度が上がります。
 
 生成済み GIF の数自体を減らしたい場合は `TOY_ACAI_RENDER_EVERY` を変更してください。
 
-学習中に作られた GIF は `outputs/rl/default/slack/pending/*.json` として Slack 送信用にスプールされます。
-学習開始時に uploader が `docs/rl_model_overview.md` を添付した Slack 親メッセージを投稿し、以降の GIF 投稿はそのメッセージのスレッドにまとまります。
+学習中に作られた GIF は各 run の `slack/pending/*.json` として Slack 送信用にスプールされます。
+学習開始時に uploader が run ごとに `docs/rl_model_overview.md` を添付した Slack 親メッセージを投稿し、以降の GIF 投稿はその run のスレッドにまとまります。
 GIF 投稿 10 件ごとに、横軸 episode、縦軸 reward の推移 PNG も同じスレッドへ投稿されます。
 Slack の設定はリポジトリ直下の `.env` に置けます。まず `.env.example` をコピーして、ログインノードで実際の値を入れてください:
 
@@ -87,6 +93,9 @@ Slack app の Bot Token Scopes には `files:write`、`files:read`、`chat:write
 ```bash
 ./local-scripts/slack-uploader.sh
 ```
+
+このスクリプトは `TOY_ACAI_OUTPUT_DIR` (既定 `outputs/rl`) の下にある `run_*/slack` を全て監視します。
+特定の run だけを投稿したい場合は `sim/slack_uploader.py --spool outputs/rl/run_<timestamp>/slack` を指定してください。
 
 注意:
 

@@ -1,20 +1,38 @@
 from pathlib import Path
-from typing import Iterable, List
+from typing import Iterable, List, Optional
 
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
 
-def value_overlay_lines(values: Iterable[float]) -> List[str]:
-    return [f"B{agent_id} critic={float(value):+.3f}" for agent_id, value in enumerate(values)]
+def value_overlay_lines(
+    values: Iterable[float],
+    rewards: Optional[Iterable[float]] = None,
+) -> List[str]:
+    values_list = [float(value) for value in values]
+    if rewards is None:
+        return [f"B{agent_id} critic={value:+.3f}" for agent_id, value in enumerate(values_list)]
+    rewards_list = [float(reward) for reward in rewards]
+    if len(rewards_list) != len(values_list):
+        raise ValueError(
+            f"values and rewards length mismatch: values={len(values_list)} rewards={len(rewards_list)}"
+        )
+    return [
+        f"B{agent_id} critic={value:+.3f} reward={reward:+.3f}"
+        for agent_id, (value, reward) in enumerate(zip(values_list, rewards_list))
+    ]
 
 
-def draw_value_overlay(frame: np.ndarray, values: Iterable[float]) -> Image.Image:
+def draw_value_overlay(
+    frame: np.ndarray,
+    values: Iterable[float],
+    rewards: Optional[Iterable[float]] = None,
+) -> Image.Image:
     image = Image.fromarray(np.asarray(frame, dtype=np.uint8)).convert("RGBA")
     overlay = Image.new("RGBA", image.size, (0, 0, 0, 0))
     draw = ImageDraw.Draw(overlay)
     font = ImageFont.load_default()
-    lines = value_overlay_lines(values)
+    lines = value_overlay_lines(values, rewards)
     if not lines:
         return image
 
@@ -71,5 +89,10 @@ class FrameGifRecorder:
 
 
 class ValueGifRecorder(FrameGifRecorder):
-    def record(self, frame: np.ndarray, values: Iterable[float]) -> None:
-        self.frames.append(draw_value_overlay(frame, values).convert("RGB"))
+    def record(
+        self,
+        frame: np.ndarray,
+        values: Iterable[float],
+        rewards: Optional[Iterable[float]] = None,
+    ) -> None:
+        self.frames.append(draw_value_overlay(frame, values, rewards).convert("RGB"))

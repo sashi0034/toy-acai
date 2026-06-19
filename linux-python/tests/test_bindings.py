@@ -19,6 +19,14 @@ class ToyAcaiBindingsTest(unittest.TestCase):
         toy_acai_core.init_battlefield(self.context)
 
     def test_context_state_is_mutable_in_place(self):
+        for fighter in self.context.fighters:
+            fighter.health = 0.0
+        self.assertEqual(
+            [fighter.health for fighter in self.context.fighters],
+            [0.0] * toy_acai_core.FIGHTER_COUNT,
+        )
+
+        toy_acai_core.init_battlefield(self.context)
         fighter = self.context.fighters[0]
         fighter.position.x = 120.0
         fighter.position.y = 240.0

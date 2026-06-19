@@ -362,7 +362,7 @@ NB_MODULE(toy_acai_core, m)
         .def("__setitem__", &FighterStates::set)
         .def("__iter__", [](FighterStates& fighters)
         {
-            return nb::make_iterator(
+            return nb::make_iterator<nb::rv_policy::reference>(
                 nb::type<FighterStates>(),
                 "FighterStatesIterator",
                 fighters.begin(),

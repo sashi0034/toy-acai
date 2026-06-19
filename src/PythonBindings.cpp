@@ -390,7 +390,8 @@ NB_MODULE(toy_acai_core, m)
         }, nb::rv_policy::reference_internal)
         .def_rw("next_missile_id", &toy_acai::BattlefieldContext::nextMissileId)
         .def_rw("screen_size", &toy_acai::BattlefieldContext::screenSize)
-        .def_rw("battlefield_area", &toy_acai::BattlefieldContext::battlefieldArea);
+        .def_rw("battlefield_area", &toy_acai::BattlefieldContext::battlefieldArea)
+        .def_rw("battlefield_diagonal_length", &toy_acai::BattlefieldContext::battlefieldDiagonalLength);
 
     nb::class_<toy_acai::DistanceFromBoundary>(m, "DistanceFromBoundary")
         .def(nb::init<>())

@@ -2,6 +2,7 @@
 """Smoke and behavior tests for the direct toy_acai_core bindings."""
 
 import importlib
+import math
 import sys
 import unittest
 
@@ -65,6 +66,14 @@ class ToyAcaiBindingsTest(unittest.TestCase):
             toy_acai_core.compute_forward_distance_from_boundary(self.context, toy_acai_core.FIGHTER_COUNT)
 
     def test_battlefield_utils(self):
+        self.assertTrue(math.isclose(
+            self.context.battlefield_diagonal_length,
+            math.hypot(
+                self.context.battlefield_area.w,
+                self.context.battlefield_area.h,
+            ),
+        ))
+
         boundary = toy_acai_core.compute_forward_distance_from_boundary(self.context, 0)
         self.assertGreater(boundary.distance, 0.0)
 

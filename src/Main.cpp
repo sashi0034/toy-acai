@@ -5,6 +5,7 @@
 
 #include <array>
 
+#include "BattleFieldUtils.h"
 #include "LivePPAddon.h"
 
 using namespace toy_acai;
@@ -108,7 +109,11 @@ void Main()
             KeySpace.pressed(),
         };
         std::array<FighterInput, FighterCount> inputs{};
-        inputs.fill(input);
+
+        // inputs.fill(input);
+        inputs[0] = {input};
+        battlefield.fighters[4].position = battlefield.battlefieldArea.center();
+        battlefield.fighters[5].position = battlefield.battlefieldArea.center();
 
         const double deltaTime = Scene::DeltaTime();
 
@@ -116,6 +121,10 @@ void Main()
 
         renderer.update(battlefield, deltaTime);
         renderer.render(battlefield);
+
+        ClearPrint();
+        RelativePose r = ComputeRelativePose(AbsolutePose(battlefield.fighters[0]), AbsolutePose(battlefield.fighters[4]));
+        Print << U"Relative Position: " << r.relativePosition.asPoint() << U", Relative Yaw: " << Circular{100.0, r.relativeYaw}.fastToFloat2().asPoint() << int(r.relativeYaw * 100);
     }
 }
 

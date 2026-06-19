@@ -111,6 +111,15 @@ namespace
         shooter.missileCooldown = cooldown;
     }
 
+    void CleanFighter(FighterState& fighter)
+    {
+        int teamId = fighter.teamId;
+        int memberId = fighter.memberId;
+        fighter = {};
+        fighter.teamId = teamId;
+        fighter.memberId = memberId;
+    }
+
     void UpdateFighters(BattlefieldContext& context, const std::array<FighterInput, FighterCount>& inputs, double deltaTime)
     {
         for (int i = 0; i < FighterCount; ++i)
@@ -118,6 +127,7 @@ namespace
             auto& fighter = context.fighters[i];
             if (!IsAlive(fighter))
             {
+                CleanFighter(fighter);
                 continue;
             }
 

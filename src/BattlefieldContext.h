@@ -21,6 +21,7 @@ namespace toy_acai
 
     struct MissileState
     {
+        std::uint64_t id;
         Vec2 position; // battlefieldArea.pos からの相対座標
         double yaw;
         double speed;
@@ -29,15 +30,12 @@ namespace toy_acai
         int teamId;
         int shooterFighterIndex;
         int targetFighterIndex;
-        std::uint64_t id;
     };
 
     struct HitEvent
     {
         int shooterFighterIndex;
-        int shooterTeam;
         int targetFighterIndex;
-        int targetTeam;
     };
 
     struct BattlefieldContext

@@ -26,7 +26,7 @@ namespace
 
     double NormalizeAngle(double angle)
     {
-        return std::remainder(angle, TwoPi);
+        return Math::NormalizeAngle(angle, 0);
     }
 
     bool IsAlive(const FighterState& fighter)
@@ -96,6 +96,7 @@ namespace
         const Vec2 forward = Forward(shooter.yaw);
         constexpr double initialSpeed = 150.0;
         context.missiles.push_back(MissileState{
+            context.nextMissileId++,
             shooter.position + forward * (FighterSize * 0.75),
             shooter.yaw,
             initialSpeed,
@@ -104,7 +105,6 @@ namespace
             shooter.teamId,
             shooterIndex,
             targetIndex,
-            context.nextMissileId++,
         });
 
         constexpr double cooldown = 3.5;
@@ -220,9 +220,7 @@ namespace
             {
                 context.hitEvents.push_back(HitEvent{
                     missile.shooterFighterIndex,
-                    missile.teamId,
                     missile.targetFighterIndex,
-                    target->teamId,
                 });
                 target->health = 0.0;
                 continue;

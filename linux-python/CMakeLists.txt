@@ -34,6 +34,16 @@ target_compile_features(toy_acai_core PRIVATE cxx_std_20)
 target_compile_options(toy_acai_core PRIVATE -Wall -Wextra -Wpedantic -msse4.2)
 target_link_libraries(toy_acai_core PRIVATE Siv3D::Siv3D)
 
+# Generate .pyi stub files
+set(TOY_ACAI_STUB_DIR "${CMAKE_CURRENT_SOURCE_DIR}/stubs")
+file(MAKE_DIRECTORY "${TOY_ACAI_STUB_DIR}")
+nanobind_add_stub(toy_acai_core-stub
+	MODULE toy_acai_core
+	OUTPUT "${TOY_ACAI_STUB_DIR}/toy_acai_core.pyi"
+	PYTHON_PATH "$<TARGET_FILE_DIR:toy_acai_core>"
+	DEPENDS toy_acai_core
+)
+
 add_custom_target(toy-acai-python-copy-resources ALL
 	COMMAND "${CMAKE_COMMAND}" -E copy_directory
 		"${SIV3D_RESOURCE_DIR}"

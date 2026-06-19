@@ -1,0 +1,4 @@
+{
+  "stubPath": "linux-python/stubs",
+  "extraPaths": ["linux-python/build"]
+}

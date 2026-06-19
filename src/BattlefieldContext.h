@@ -46,6 +46,7 @@ namespace toy_acai
         std::uint64_t nextMissileId = 0;
         Vec2 screenSize;
         RectF battlefieldArea;
+        double battlefieldDiagonalLength;
     };
 
     struct FighterInput

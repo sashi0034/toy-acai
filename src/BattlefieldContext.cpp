@@ -239,6 +239,7 @@ namespace toy_acai
     {
         context.screenSize = {1920, 1080};
         context.battlefieldArea = RectF{Arg::center = context.screenSize * 0.5f, Vec2{1600, 900}};
+        context.battlefieldDiagonalLength = context.battlefieldArea.size.length();
         context.missiles.clear();
         context.hitEvents.clear();
         context.nextMissileId = 0;

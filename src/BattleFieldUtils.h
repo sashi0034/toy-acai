@@ -10,4 +10,24 @@ namespace toy_acai
     };
 
     DistanceFromBoundary ComputeForwardDistanceFromBoundary(const BattlefieldContext& context, int fighterIndex);
+
+    struct AbsolutePose
+    {
+        Vec2 position;
+        double yaw;
+
+        explicit AbsolutePose(const FighterState& fighter)
+            : position(fighter.position), yaw(fighter.yaw) {}
+
+        explicit AbsolutePose(const MissileState& missile)
+            : position(missile.position), yaw(missile.yaw) {}
+    };
+
+    struct RelativePose
+    {
+        Vec2 relativePosition;
+        double relativeYaw;
+    };
+
+    RelativePose ComputeRelativePose(const AbsolutePose& fromPose, const AbsolutePose& toPose);
 }

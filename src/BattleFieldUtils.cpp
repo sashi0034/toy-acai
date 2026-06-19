@@ -169,4 +169,16 @@ namespace toy_acai
             nearestEdge != nullptr ? RelativeAngleFromEdge(*nearestEdge, fighter.yaw) : 0.0,
         };
     }
+
+    RelativePose ComputeRelativePose(const AbsolutePose& fromPose, const AbsolutePose& toPose)
+    {
+        Vec2 relativePosition = (toPose.position - fromPose.position).rotated(-fromPose.yaw);
+        relativePosition = relativePosition.yx();
+
+        const double relativeYaw = toPose.yaw - fromPose.yaw;
+        return RelativePose{
+            relativePosition,
+            relativeYaw
+        };
+    }
 }

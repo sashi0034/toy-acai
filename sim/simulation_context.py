@@ -28,7 +28,7 @@ class SimulationContext:
 
         import toy_acai_core
 
-        self.m = toy_acai_core
+        self.m = toy_acai_core  # TODO: もっと良いやり方があるか調査
 
         self.battlefiled = self.m.BattlefieldContext()
 

@@ -19,12 +19,10 @@ def setup_battlefield(ctx: SimulationContext):
 
     for fighter in ctx.battlefiled.fighters:
         fighter.health = 0.0
-        fighter.speed = 0.0
 
     blue = ctx.battlefiled.fighters[0]
     blue.position = ctx.m.Vec2(240.0, 450.0)
     blue.yaw = 0.0
-    blue.speed = 130.0
     blue.health = 1.0
     blue.missile_cooldown = 0.0
     blue.out_of_bounds_time = 0.0
@@ -33,7 +31,6 @@ def setup_battlefield(ctx: SimulationContext):
         fighter = ctx.battlefiled.fighters[fighter_index]
         fighter.position = ctx.m.Vec2(*position)
         fighter.yaw = math.pi
-        fighter.speed = 130.0
         fighter.health = 1.0
         fighter.missile_cooldown = 0.0
         fighter.out_of_bounds_time = 0.0

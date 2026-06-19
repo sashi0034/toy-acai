@@ -26,6 +26,7 @@ endif()
 find_package(nanobind CONFIG REQUIRED)
 
 nanobind_add_module(toy_acai_core
+	../src/BattleFieldUtils.cpp
 	../src/BattlefieldContext.cpp
 	../src/BattlefieldRenderer.cpp
 	../src/PythonBindings.cpp
@@ -51,3 +52,9 @@ add_custom_target(toy-acai-python-copy-resources ALL
 	COMMENT "Copying Siv3D engine resources"
 )
 add_dependencies(toy-acai-python-copy-resources toy_acai_core)
+
+enable_testing()
+add_test(
+	NAME toy-acai-python-bindings
+	COMMAND "${Python_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_bindings.py" "$<TARGET_FILE_DIR:toy_acai_core>"
+)

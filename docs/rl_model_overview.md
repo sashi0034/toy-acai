@@ -1,6 +1,6 @@
 # Python 強化学習モデル概要
 
-このドキュメントは、`sim/` 以下で実装している toy-acai の強化学習モデルの概要です。
+このドキュメントは、`old_sim/` 以下で実装している toy-acai の強化学習モデルの概要です。
 現在の Python 学習コードは、C++ シミュレータ `toy_acai_core` を Python から呼び出し、Blue チームを PPO で学習させます。Red チームは固定のルールベース AI です。
 
 主な実装ファイルは次の通りです。
@@ -8,7 +8,7 @@
 - `sim/toy_acai_rl/env.py`: C++ シミュレータを PPO 用に包む環境ラッパー、観測ベクトル、報酬設計
 - `sim/toy_acai_rl/ppo.py`: Actor-Critic モデル、rollout buffer、PPO 更新
 - `sim/train_ppo.py`: 学習ループ、評価、checkpoint 保存、ログ出力
-- `src/PythonBindings.cpp`: C++ の戦場状態を Python の `dict` / NumPy 配列として返すバインディング
+- `src/PythonBindings.cpp`: C++ の `BattlefieldContext` と関連構造体を Python から直接操作するバインディング
 
 ## 全体の流れ
 
@@ -77,54 +77,14 @@ checkpoint には現在の `curriculum_stage`、`opponent_count`、`stage_episod
 
 ## シミュレータ状態
 
-C++ 側の `BattlefieldEnv` は、各 step 後に Python へ次の情報を返します。
+Python では `BattlefieldContext` を生成し、`init_battlefield(context)` と
+`update_battlefield(context, inputs, delta_time)` を呼び出します。状態は dict や状態行列へ変換されず、
+`context.fighters[0].position.x` のように C++ の構造と対応する属性を直接読み書きします。
 
-### `fighters`
-
-形状はおおむね `[8, 9]` です。Blue 4 機 + Red 4 機の状態が並びます。
-
-各行の意味は次の通りです。
-
-| index | 意味 |
-| --- | --- |
-| 0 | `teamId`。Blue は 0、Red は 1 |
-| 1 | `memberId`。チーム内 ID |
-| 2 | x 座標 |
-| 3 | y 座標 |
-| 4 | yaw。機体の向き |
-| 5 | speed |
-| 6 | health。`0` 以下なら撃墜扱い |
-| 7 | missileCooldown |
-| 8 | outOfBoundsTime。戦場外に出ている時間 |
-
-### `missiles`
-
-形状は `[ミサイル数, 9]` です。
-
-| index | 意味 |
-| --- | --- |
-| 0 | x 座標 |
-| 1 | y 座標 |
-| 2 | yaw |
-| 3 | speed |
-| 4 | age |
-| 5 | lockLostTime |
-| 6 | teamId。どちらのチームが撃ったか |
-| 7 | targetFighterIndex |
-| 8 | missileId。C++ 側で発射ごとに採番される一意 ID |
-
-### `hit_events`
-
-形状は `[命中イベント数, 4]` です。
-
-| index | 意味 |
-| --- | --- |
-| 0 | shooterFighterIndex |
-| 1 | shooterTeam |
-| 2 | targetFighterIndex |
-| 3 | targetTeam |
-
-この情報は主に撃墜報酬の計算に使われます。
+`fighters` は固定長シーケンス、`missiles` と `hit_events` は可変シーケンスです。各要素は
+`FighterState`、`MissileState`、`HitEvent` として公開され、`team_id`、`missile_cooldown`、
+`shooter_fighter_index` など snake_case の属性を持ちます。境界距離と相対 pose は
+`compute_forward_distance_from_boundary()` と `compute_relative_pose()` で求められます。
 
 ## 行動空間
 

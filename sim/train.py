@@ -6,6 +6,7 @@ from PIL import Image
 import torch
 
 from .rl.curriculum import Curriculum, initial_curriculum
+from .rl.render_utils import render_reward, save_rendered_frames
 from .rl.observation import OBS_DIM, build_observation
 from .rl.policy import Policy
 from .rl.returns import compute_returns, normalize_returns
@@ -14,23 +15,6 @@ from .core import core
 from .simulation_context import SimulationContext
 from . import constants
 from . import hyperparameters
-
-
-def save_gif(frames: list[Image.Image], render_path: Path):
-    if not frames:
-        print(f"No frames to save: {render_path}")
-        return
-
-    frames[0].save(
-        render_path,
-        format="GIF",
-        append_images=frames[1:],
-        save_all=True,
-        duration=round(constants.RENDER_INTERVAL * 1000),
-        loop=0,
-        disposal=2,
-    )
-    print(f"Saved {len(frames)} frames to {render_path}")
 
 
 def run_episode(
@@ -62,6 +46,7 @@ def run_episode(
 
     log_probs = []
     rewards = []
+    total_reward = 0.0
 
     # シミュレーションループ
     step = 0
@@ -85,7 +70,9 @@ def run_episode(
 
         core.update_battlefield(battlefield, inputs, constants.SIMULATION_DELTA_TIME)
 
-        rewards.append(curriculum.step_reward(ctx, previous_battlefield, inputs))
+        reward = curriculum.step_reward(ctx, previous_battlefield, inputs)
+        rewards.append(reward)
+        total_reward += reward
         log_probs.append(log_prob)
 
         if render:
@@ -93,9 +80,10 @@ def run_episode(
 
             if step % render_every_steps == 0:
                 renderer.render(battlefield)
-                frames.append(
-                    Image.fromarray(renderer.image_buffer(), mode="RGBA").copy()
-                )
+
+                frame = Image.fromarray(renderer.image_buffer(), mode="RGBA").copy()
+                frame = render_reward(frame, total_reward)
+                frames.append(frame)
 
         if curriculum.is_terminal(ctx):
             break
@@ -108,7 +96,7 @@ def run_episode(
 
     if render:
         assert render_path is not None
-        save_gif(frames, render_path)
+        save_rendered_frames(frames, render_path, constants.RENDER_INTERVAL)
     curriculum.record_episode()
     return sum(rewards), loss, step
 

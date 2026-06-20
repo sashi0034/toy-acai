@@ -10,7 +10,7 @@ LEARNING_RATE = 3e-4
 NUM_UPDATES = 128
 
 # 1 回のパラメータ更新に使うエピソード数
-EPISODES_PER_UPDATE = 8
+EPISODES_PER_UPDATE = 16
 
 # ステップごとの報酬割引率
 REWARD_DISCOUNT = 0.99

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import math
+import random
 
 from PIL import Image
 import torch
@@ -15,26 +16,48 @@ from . import constants
 from . import hyperparameters
 
 
-def setup_battlefield(ctx: SimulationContext):
+def setup_battlefield(ctx: SimulationContext, rng: random.Random):
     core.init_battlefield(ctx.battlefield)
 
     for fighter in ctx.battlefield.fighters:
         fighter.health = 0.0
 
-    blue = ctx.battlefield.fighters[0]
-    blue.position = core.Vec2(240.0, 450.0)
-    blue.yaw = 0.0
-    blue.health = 1.0
-    blue.missile_cooldown = 0.0
-    blue.out_of_bounds_time = 0.0
+    active_fighter_indices = [
+        # 自機
+        0,
+        # 敵機
+        4,
+        5,
+    ]
 
-    for fighter_index, position in ((4, (1360.0, 300.0)), (5, (1360.0, 600.0))):
+    player_position = core.Vec2(0, 0)
+    for fighter_index in active_fighter_indices:
         fighter = ctx.battlefield.fighters[fighter_index]
-        fighter.position = core.Vec2(*position)
-        fighter.yaw = math.pi
         fighter.health = 1.0
-        fighter.missile_cooldown = 0.0
-        fighter.out_of_bounds_time = 0.0
+
+        MARGIN = 40  # px
+        SPAN_DISTANCE = 400  # px
+
+        area = ctx.battlefield.battlefield_area.size
+
+        random_x = 0.0
+        random_y = 0.0
+        for _ in range(1000):
+            random_x = MARGIN + (area.x - 2 * MARGIN) * rng.random()
+            random_y = MARGIN + (area.y - 2 * MARGIN) * rng.random()
+
+            if fighter_index == 0:
+                player_position = core.Vec2(random_x, random_y)
+                break
+            elif (  # 敵機は自機から一定距離以上離す
+                player_position.distance_from_sq(core.Vec2(random_x, random_y))
+                >= SPAN_DISTANCE**2
+            ):
+                break
+
+        fighter.position = core.Vec2(random_x, random_y)
+
+        fighter.yaw = 2 * math.pi * rng.random()
 
 
 def is_terminal(ctx: SimulationContext) -> bool:
@@ -82,6 +105,7 @@ def save_gif(frames: list[Image.Image], filename: str):
 def run_episode(
     ctx: SimulationContext,
     policy: Policy,
+    rng: random.Random,
     render_filename: str | None = None,
 ):
     battlefield = ctx.battlefield
@@ -94,7 +118,7 @@ def run_episode(
         ctx.renderer.enable_render_to_image_buffer(core.Size(*constants.RENDER_SIZE))
     renderer = ctx.renderer
 
-    setup_battlefield(ctx)
+    setup_battlefield(ctx, rng)
 
     enemy_ai = RuleBasedAI(team_id=1)
     enemy_ai.reset()
@@ -167,16 +191,20 @@ def run():
         batch_losses = []
         batch_steps = []
 
+        rng = random.Random(0)
+
+        # 複数エピソードを実行して報酬と損失を収集する
         for episode_in_update in range(hyperparameters.EPISODES_PER_UPDATE):
             render_output = (
-                f"update_{update:04d}.gif"
-                if episode_in_update == 0 and update % 5 == 0
+                f"update_{update:04d}_{episode_in_update:04d}.gif"
+                if (episode_in_update == (update % hyperparameters.EPISODES_PER_UPDATE))
                 else None
             )
 
             total_reward, loss, steps = run_episode(
                 ctx,
                 policy,
+                rng,
                 render_output,
             )
 
@@ -193,7 +221,7 @@ def run():
         print(
             f"update={update + 1} episodes={hyperparameters.EPISODES_PER_UPDATE} "
             f"reward={sum(batch_rewards) / len(batch_rewards):.2f} "
-            f"loss={loss.item():.4f}"
+            f"loss={loss.item():.4f} "
             f"steps={sum(batch_steps) / len(batch_steps):.1f} "
         )
 

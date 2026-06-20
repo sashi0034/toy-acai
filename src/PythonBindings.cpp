@@ -295,7 +295,25 @@ NB_MODULE(toy_acai_core, m)
         .def(nb::init<>())
         .def(nb::init<double, double>(), "x"_a, "y"_a)
         .def_rw("x", &s3d::Vec2::x)
-        .def_rw("y", &s3d::Vec2::y);
+        .def_rw("y", &s3d::Vec2::y)
+        .def("length", &s3d::Vec2::length)
+        .def("length_sq", &s3d::Vec2::lengthSq)
+        .def("distance_sq", &s3d::Vec2::lengthSq)
+        .def("distance_from", [](const s3d::Vec2& self, const s3d::Vec2& other)
+        {
+            return self.distanceFrom(other);
+        }, "other"_a)
+        .def("distance_from_sq", [](const s3d::Vec2& self, const s3d::Vec2& other)
+        {
+            return self.distanceFromSq(other);
+        }, "other"_a)
+        .def("dot", &s3d::Vec2::dot, "other"_a)
+        .def("cross", &s3d::Vec2::cross, "other"_a)
+        .def("normalized", &s3d::Vec2::normalized)
+        .def("normalized_or", &s3d::Vec2::normalized_or, "value_if_zero"_a)
+        .def("rotated", &s3d::Vec2::rotated, "angle"_a)
+        .def("angle", nb::overload_cast<>(&s3d::Vec2::getAngle, nb::const_))
+        .def("angle_to", nb::overload_cast<s3d::Vec2>(&s3d::Vec2::getAngle, nb::const_), "other"_a);
 
     nb::class_<s3d::Size>(m, "Size")
         .def(nb::init<>())

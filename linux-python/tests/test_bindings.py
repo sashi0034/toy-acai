@@ -66,6 +66,25 @@ class ToyAcaiBindingsTest(unittest.TestCase):
             toy_acai_core.compute_forward_distance_from_boundary(self.context, toy_acai_core.FIGHTER_COUNT)
 
     def test_battlefield_utils(self):
+        origin = toy_acai_core.Vec2()
+        point = toy_acai_core.Vec2(3.0, 4.0)
+        self.assertEqual(point.length(), 5.0)
+        self.assertEqual(point.length_sq(), 25.0)
+        self.assertEqual(point.distance_sq(), 25.0)
+        self.assertEqual(origin.distance_from(point), 5.0)
+        self.assertEqual(origin.distance_from_sq(point), 25.0)
+        self.assertEqual(point.dot(point), 25.0)
+        self.assertEqual(origin.cross(point), 0.0)
+        self.assertEqual(point.normalized().length(), 1.0)
+        self.assertTrue(math.isclose(point.rotated(math.pi).x, -3.0))
+        self.assertTrue(math.isclose(point.angle(), math.atan2(3.0, -4.0)))
+        self.assertTrue(
+            math.isclose(
+                point.angle_to(toy_acai_core.Vec2(4.0, 3.0)),
+                math.atan2(-7.0, 24.0),
+            )
+        )
+
         self.assertTrue(math.isclose(
             self.context.battlefield_diagonal_length,
             math.hypot(

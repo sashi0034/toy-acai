@@ -9,9 +9,11 @@ layout used by the old simulator.
 from __future__ import annotations
 
 import math
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from ..core import core
+from ..math_utils import clamp, normalize_angle
 
 if TYPE_CHECKING:
     from ..simulation_context import SimulationContext
@@ -23,9 +25,16 @@ TURN_PAUSE_STEPS = 30
 TURN_INPUT_THRESHOLD = 0.15
 
 CRUISE_ACCELERATION = 0.55
-TURN_FULL_SCALE_ANGLE = 0.7
+TURN_FULL_SCALE_ANGLE = math.pi / 4
 FIRE_ANGLE = 0.35
 EDGE_MARGIN = 80.0
+
+
+@dataclass
+class MemberState:
+    turn_direction_sign: int = 0
+    similar_turn_steps: int = 0
+    turn_pause_remaining: int = 0
 
 
 class RuleBasedAI:
@@ -38,22 +47,18 @@ class RuleBasedAI:
 
     def __init__(self, team_id: int = 1):
         self.team_id = team_id
-        self._similar_turn_steps: dict[int, int] = {}
-        self._turn_pause_remaining: dict[int, int] = {}
-        self._turn_direction_sign: dict[int, int] = {}
+        self._member_states: dict[int, MemberState] = {}
 
     def reset(self) -> None:
-        self._similar_turn_steps.clear()
-        self._turn_pause_remaining.clear()
-        self._turn_direction_sign.clear()
+        self._member_states.clear()
 
     def inputs(self, ctx: SimulationContext) -> dict[int, core.FighterInput]:
         """Return ``FighterInput`` values keyed by controlled fighter index."""
         fighters = ctx.battlefield.fighters
         target_team_id = 1 - self.team_id
-        target_indices = [
-            index
-            for index, fighter in enumerate(fighters)
+        targets = [
+            fighter
+            for fighter in fighters
             if fighter.team_id == target_team_id and fighter.health > 0.0
         ]
 
@@ -62,14 +67,16 @@ class RuleBasedAI:
             if fighter.team_id != self.team_id or fighter.health <= 0.0:
                 continue
 
-            if target_indices:
-                target_index = min(
-                    target_indices,
-                    key=lambda index: self._distance_squared(fighter, fighters[index]),
+            if targets:
+                target = min(
+                    targets,
+                    key=lambda target: fighter.position.distance_from_sq(
+                        target.position
+                    ),
                 )
                 relative_pose = core.compute_relative_pose(
                     core.AbsolutePose(fighter),
-                    core.AbsolutePose(fighters[target_index]),
+                    core.AbsolutePose(target),
                 )
                 # compute_relative_pose uses x=right and y=forward in local
                 # coordinates.  Thus atan2(right, forward) is the yaw error.
@@ -77,7 +84,7 @@ class RuleBasedAI:
                     relative_pose.relative_position.x,
                     relative_pose.relative_position.y,
                 )
-                turn = self._clamp(yaw_delta / TURN_FULL_SCALE_ANGLE, -1.0, 1.0)
+                turn = self._turn_for_yaw_delta(yaw_delta)
                 fire = abs(yaw_delta) < FIRE_ANGLE
             else:
                 turn = self._turn_toward_battlefield_center(ctx, fighter)
@@ -90,14 +97,6 @@ class RuleBasedAI:
             )
 
         return inputs
-
-    @staticmethod
-    def _distance_squared(
-        first: core.FighterState, second: core.FighterState
-    ) -> float:
-        dx = first.position.x - second.position.x
-        dy = first.position.y - second.position.y
-        return dx * dx + dy * dy
 
     def _turn_toward_battlefield_center(
         self, ctx: SimulationContext, fighter: core.FighterState
@@ -113,44 +112,37 @@ class RuleBasedAI:
             area.h * 0.5 - fighter.position.y,
             area.w * 0.5 - fighter.position.x,
         )
-        yaw_delta = self._angle_delta(center_yaw, fighter.yaw)
-        return self._clamp(yaw_delta / TURN_FULL_SCALE_ANGLE, -1.0, 1.0)
+        return self._turn_for_yaw_delta(normalize_angle(center_yaw - fighter.yaw))
+
+    @staticmethod
+    def _turn_for_yaw_delta(yaw_delta: float) -> float:
+        return clamp(yaw_delta / TURN_FULL_SCALE_ANGLE, -1.0, 1.0)
 
     def _apply_turn_pause_rule(self, fighter_index: int, turn: float) -> float:
-        pause_remaining = self._turn_pause_remaining.get(fighter_index, 0)
-        if pause_remaining > 0:
-            self._turn_pause_remaining[fighter_index] = pause_remaining - 1
-            self._similar_turn_steps[fighter_index] = 0
-            self._turn_direction_sign[fighter_index] = 0
+        state = self._member_states.setdefault(fighter_index, MemberState())
+        if state.turn_pause_remaining > 0:
+            state.turn_pause_remaining -= 1
+            state.turn_direction_sign = 0
+            state.similar_turn_steps = 0
             return 0.0
 
-        turn_sign = 0
-        if abs(turn) >= TURN_INPUT_THRESHOLD:
-            turn_sign = 1 if turn > 0.0 else -1
-
-        previous_sign = self._turn_direction_sign.get(fighter_index, 0)
-        if turn_sign != 0 and turn_sign == previous_sign:
-            similar_steps = self._similar_turn_steps.get(fighter_index, 0) + 1
-        elif turn_sign != 0:
-            similar_steps = 1
+        if turn >= TURN_INPUT_THRESHOLD:
+            direction = 1
+        elif turn <= -TURN_INPUT_THRESHOLD:
+            direction = -1
         else:
-            similar_steps = 0
+            direction = 0
 
-        self._similar_turn_steps[fighter_index] = similar_steps
-        self._turn_direction_sign[fighter_index] = turn_sign
+        if direction != 0 and direction == state.turn_direction_sign:
+            state.similar_turn_steps += 1
+        else:
+            state.turn_direction_sign = direction
+            state.similar_turn_steps = 1 if direction != 0 else 0
 
-        if similar_steps >= TURN_SIMILAR_DURATION_STEPS:
-            self._similar_turn_steps[fighter_index] = 0
-            self._turn_direction_sign[fighter_index] = 0
-            self._turn_pause_remaining[fighter_index] = TURN_PAUSE_STEPS - 1
+        if state.similar_turn_steps >= TURN_SIMILAR_DURATION_STEPS:
+            state.turn_direction_sign = 0
+            state.similar_turn_steps = 0
+            state.turn_pause_remaining = TURN_PAUSE_STEPS - 1
             return 0.0
 
         return turn
-
-    @staticmethod
-    def _angle_delta(target_yaw: float, current_yaw: float) -> float:
-        return (target_yaw - current_yaw + math.pi) % (2.0 * math.pi) - math.pi
-
-    @staticmethod
-    def _clamp(value: float, minimum: float, maximum: float) -> float:
-        return max(minimum, min(value, maximum))

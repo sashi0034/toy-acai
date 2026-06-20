@@ -1,6 +1,7 @@
 import math
 
 import torch
+
 from ..core import core
 from ..simulation_context import SimulationContext
 
@@ -42,9 +43,7 @@ def build_observation(ctx: SimulationContext):
         enemy_futures.append((relative_pose, enemy.speed))
 
     # 近い順にソート
-    enemy_futures.sort(
-        key=lambda x: x[0].relative_position.x ** 2 + x[0].relative_position.y ** 2
-    )
+    enemy_futures.sort(key=lambda future: future[0].relative_position.length_sq())
 
     # 最も近い敵機とその次に近い敵機だけ追加
     for i in range(2):
@@ -71,9 +70,7 @@ def build_observation(ctx: SimulationContext):
         )
         missile_futures.append((relative_pose, missile.speed))
 
-    missile_futures.sort(
-        key=lambda x: x[0].relative_position.x ** 2 + x[0].relative_position.y ** 2
-    )
+    missile_futures.sort(key=lambda future: future[0].relative_position.length_sq())
 
     for i in range(2):
         if i < len(missile_futures):

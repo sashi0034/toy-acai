@@ -5,7 +5,7 @@ from pathlib import Path
 from PIL import Image
 import torch
 
-from .rl.curriculum import Curriculum, MoveCurriculum
+from .rl.curriculum import Curriculum, initial_curriculum
 from .rl.observation import OBS_DIM, build_observation
 from .rl.policy import Policy
 from .rl.returns import compute_returns, normalize_returns
@@ -81,11 +81,11 @@ def run_episode(
         for fighter_index, enemy_input in curriculum.opponent_inputs(ctx, rng).items():
             inputs[fighter_index] = enemy_input
 
-        blue_was_alive = battlefield.fighters[0].health > 0.0
+        previous_battlefield = core.BattlefieldContext(battlefield)
 
         core.update_battlefield(battlefield, inputs, constants.SIMULATION_DELTA_TIME)
 
-        rewards.append(curriculum.step_reward(ctx, blue_was_alive))
+        rewards.append(curriculum.step_reward(ctx, previous_battlefield, inputs))
         log_probs.append(log_prob)
 
         if render:
@@ -125,7 +125,7 @@ def run():
     policy = Policy(obs_dim, hidden_dim=hyperparameters.HIDDEN_DIM).to(device)
     optimizer = torch.optim.Adam(policy.parameters(), lr=hyperparameters.LEARNING_RATE)
 
-    curriculum = MoveCurriculum(ctx)
+    curriculum = initial_curriculum(ctx)
 
     for update in range(hyperparameters.NUM_UPDATES):
         batch_rewards = []

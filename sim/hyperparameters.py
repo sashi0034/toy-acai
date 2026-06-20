@@ -7,7 +7,7 @@ HIDDEN_DIM = 128
 LEARNING_RATE = 3e-4
 
 # 学習全体で実行する更新回数
-NUM_UPDATES = 128
+NUM_UPDATES = 5000
 
 # 1 回のパラメータ更新に使うエピソード数
 EPISODES_PER_UPDATE = 16

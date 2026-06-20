@@ -6,8 +6,11 @@ HIDDEN_DIM = 128
 # 学習率
 LEARNING_RATE = 3e-4
 
-# シミュレーションを実行する回数
-NUM_EPISODES = 1000
+# 学習全体で実行する更新回数
+NUM_UPDATES = 128
+
+# 1 回のパラメータ更新に使うエピソード数
+EPISODES_PER_UPDATE = 8
 
 # ステップごとの報酬割引率
 REWARD_DISCOUNT = 0.99

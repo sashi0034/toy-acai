@@ -37,17 +37,6 @@ def setup_battlefield(ctx: SimulationContext):
         fighter.out_of_bounds_time = 0.0
 
 
-def random_inputs(ctx: SimulationContext, rng):
-    return [
-        core.FighterInput(
-            rng.uniform(-1.0, 1.0),
-            rng.uniform(-1.0, 1.0),
-            rng.random() < 0.15,
-        )
-        for _ in range(core.FIGHTER_COUNT)
-    ]
-
-
 def is_terminal(ctx: SimulationContext) -> bool:
     blue = ctx.battlefield.fighters[0]
     red_alive = any(
@@ -93,14 +82,13 @@ def save_gif(frames: list[Image.Image], filename: str):
 def run_episode(
     ctx: SimulationContext,
     policy: Policy,
-    optimizer: torch.optim.Optimizer,
-    episode: int,
+    render_filename: str | None = None,
 ):
     battlefield = ctx.battlefield
     device = next(policy.parameters()).device
     policy.train()
 
-    render = (episode + 1) % 50 == 0  # TODO
+    render = render_filename is not None
     if render:
         ctx.renderer = core.BattlefieldRenderer()
         ctx.renderer.enable_render_to_image_buffer(core.Size(*constants.RENDER_SIZE))
@@ -159,13 +147,9 @@ def run_episode(
 
     loss = -(torch.stack(log_probs) * returns).mean()
 
-    optimizer.zero_grad()
-    loss.backward()
-    optimizer.step()
-
     if render:
-        save_gif(frames, f"episode_{episode + 1}.gif")
-    return sum(rewards), loss.item(), step
+        save_gif(frames, render_filename)
+    return sum(rewards), loss, step
 
 
 def run():
@@ -178,16 +162,39 @@ def run():
     policy = Policy(obs_dim, hidden_dim=hyperparameters.HIDDEN_DIM).to(device)
     optimizer = torch.optim.Adam(policy.parameters(), lr=hyperparameters.LEARNING_RATE)
 
-    for episode in range(hyperparameters.NUM_EPISODES):
-        total_reward, loss, steps = run_episode(
-            ctx,
-            policy,
-            optimizer,
-            episode,
-        )
+    for update in range(hyperparameters.NUM_UPDATES):
+        batch_rewards = []
+        batch_losses = []
+        batch_steps = []
+
+        for episode_in_update in range(hyperparameters.EPISODES_PER_UPDATE):
+            render_output = (
+                f"update_{update:04d}.gif"
+                if episode_in_update == 0 and update % 5 == 0
+                else None
+            )
+
+            total_reward, loss, steps = run_episode(
+                ctx,
+                policy,
+                render_output,
+            )
+
+            batch_rewards.append(total_reward)
+            batch_losses.append(loss)
+            batch_steps.append(steps)
+
+        # 平均損失を計算し、勾配を更新する
+        loss = torch.stack(batch_losses).mean()  # loss = - (1/N) * Σ(log π(a|s) * R)
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+
         print(
-            f"episode={episode + 1} steps={steps} "
-            f"reward={total_reward:.2f} loss={loss:.4f}"
+            f"update={update + 1} episodes={hyperparameters.EPISODES_PER_UPDATE} "
+            f"reward={sum(batch_rewards) / len(batch_rewards):.2f} "
+            f"loss={loss.item():.4f}"
+            f"steps={sum(batch_steps) / len(batch_steps):.1f} "
         )
 
 

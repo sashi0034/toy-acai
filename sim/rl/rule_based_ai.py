@@ -68,24 +68,7 @@ class RuleBasedAI:
                 continue
 
             if targets:
-                target = min(
-                    targets,
-                    key=lambda target: fighter.position.distance_from_sq(
-                        target.position
-                    ),
-                )
-                relative_pose = core.compute_relative_pose(
-                    core.AbsolutePose(fighter),
-                    core.AbsolutePose(target),
-                )
-                # compute_relative_pose uses x=right and y=forward in local
-                # coordinates.  Thus atan2(right, forward) is the yaw error.
-                yaw_delta = math.atan2(
-                    relative_pose.relative_position.x,
-                    relative_pose.relative_position.y,
-                )
-                turn = self._turn_for_yaw_delta(yaw_delta)
-                fire = abs(yaw_delta) < FIRE_ANGLE
+                turn, fire = self._turn_toward_nearest_target(fighter, targets)
             else:
                 turn = self._turn_toward_battlefield_center(ctx, fighter)
                 fire = False
@@ -97,6 +80,25 @@ class RuleBasedAI:
             )
 
         return inputs
+
+    def _turn_toward_nearest_target(
+        self, fighter: core.FighterState, targets: list[core.FighterState]
+    ) -> tuple[float, bool]:
+        target = min(
+            targets,
+            key=lambda target: fighter.position.distance_from_sq(target.position),
+        )
+        relative_pose = core.compute_relative_pose(
+            core.AbsolutePose(fighter),
+            core.AbsolutePose(target),
+        )
+        # compute_relative_pose uses x=right and y=forward in local
+        # coordinates.  Thus atan2(right, forward) is the yaw error.
+        yaw_delta = math.atan2(
+            relative_pose.relative_position.x,
+            relative_pose.relative_position.y,
+        )
+        return self._turn_for_yaw_delta(yaw_delta), abs(yaw_delta) < FIRE_ANGLE
 
     def _turn_toward_battlefield_center(
         self, ctx: SimulationContext, fighter: core.FighterState

@@ -191,6 +191,7 @@ def run():
         batch_losses = []
         batch_steps = []
 
+        # 取り敢えず update ごとに同じ乱数シードを使ってみる
         rng = random.Random(0)
 
         # 複数エピソードを実行して報酬と損失を収集する

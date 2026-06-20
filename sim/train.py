@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import math
 import random
+from pathlib import Path
 
 from PIL import Image
 import torch
@@ -11,7 +12,7 @@ from .rl.rule_based_ai import RuleBasedAI
 from .rl.returns import compute_returns, normalize_returns
 
 from .core import core
-from .simulation_context import SimulationContext, output_path
+from .simulation_context import SimulationContext
 from . import constants
 from . import hyperparameters
 
@@ -82,16 +83,13 @@ def step_reward(ctx: SimulationContext, blue_was_alive: bool) -> float:
     return reward
 
 
-def save_gif(frames: list[Image.Image], filename: str):
+def save_gif(frames: list[Image.Image], render_path: Path):
     if not frames:
-        print(f"No frames to save: {filename}")
+        print(f"No frames to save: {render_path}")
         return
 
-    output_directory = output_path()
-    output_directory.mkdir(parents=True, exist_ok=True)
-    gif_path = output_directory / filename
     frames[0].save(
-        gif_path,
+        render_path,
         format="GIF",
         append_images=frames[1:],
         save_all=True,
@@ -99,20 +97,20 @@ def save_gif(frames: list[Image.Image], filename: str):
         loop=0,
         disposal=2,
     )
-    print(f"Saved {len(frames)} frames to {gif_path}")
+    print(f"Saved {len(frames)} frames to {render_path}")
 
 
 def run_episode(
     ctx: SimulationContext,
     policy: Policy,
     rng: random.Random,
-    render_filename: str | None = None,
+    render_path: Path | None = None,
 ):
     battlefield = ctx.battlefield
     device = next(policy.parameters()).device
     policy.train()
 
-    render = render_filename is not None
+    render = render_path is not None
     if render:
         ctx.renderer = core.BattlefieldRenderer()
         ctx.renderer.enable_render_to_image_buffer(core.Size(*constants.RENDER_SIZE))
@@ -172,12 +170,15 @@ def run_episode(
     loss = -(torch.stack(log_probs) * returns).mean()
 
     if render:
-        save_gif(frames, render_filename)
+        assert render_path is not None
+        save_gif(frames, render_path)
     return sum(rewards), loss, step
 
 
 def run():
     ctx = SimulationContext()
+
+    print(f"Output directory: {ctx.output_directory()}")
 
     # PyTorch 準備
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -196,8 +197,11 @@ def run():
 
         # 複数エピソードを実行して報酬と損失を収集する
         for episode_in_update in range(hyperparameters.EPISODES_PER_UPDATE):
-            render_output = (
-                f"update_{update:04d}_{episode_in_update:04d}.gif"
+            render_path = (
+                (
+                    ctx.output_directory()
+                    / f"update_{update:04d}_{episode_in_update:04d}.gif"
+                )
                 if (episode_in_update == (update % hyperparameters.EPISODES_PER_UPDATE))
                 else None
             )
@@ -206,7 +210,7 @@ def run():
                 ctx,
                 policy,
                 rng,
-                render_output,
+                render_path,
             )
 
             batch_rewards.append(total_reward)

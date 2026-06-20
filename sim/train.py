@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 import math
-import random
 
 from PIL import Image
 import torch
 
 from .rl.observation import OBS_DIM, build_observation
 from .rl.policy import Policy
+from .rl.rule_based_ai import RuleBasedAI
 from .rl.returns import compute_returns, normalize_returns
 
 from .simulation_context import SimulationContext, output_path
@@ -93,7 +93,6 @@ def run_episode(
     ctx: SimulationContext,
     policy: Policy,
     optimizer: torch.optim.Optimizer,
-    rng: random.Random,
     episode: int,
 ):
     battlefiled = ctx.battlefiled
@@ -107,6 +106,9 @@ def run_episode(
     renderer = ctx.renderer
 
     setup_battlefield(ctx)
+
+    enemy_ai = RuleBasedAI(team_id=1)
+    enemy_ai.reset()
 
     frames = []
     max_step_count = round(
@@ -127,8 +129,10 @@ def run_episode(
         action_tensor, log_prob = policy.sample_action(obs_tensor)
         acceleration, turn, fire = action_tensor.detach().cpu().tolist()
 
-        inputs = random_inputs(ctx, rng)
+        inputs = [ctx.m.FighterInput() for _ in range(ctx.m.FIGHTER_COUNT)]
         inputs[0] = ctx.m.FighterInput(acceleration, turn, fire >= 0.5)
+        for fighter_index, enemy_input in enemy_ai.inputs(ctx).items():
+            inputs[fighter_index] = enemy_input
 
         blue_was_alive = battlefiled.fighters[0].health > 0.0
 
@@ -166,8 +170,6 @@ def run_episode(
 def run():
     ctx = SimulationContext()
 
-    rng = random.Random()
-
     # PyTorch 準備
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -180,7 +182,6 @@ def run():
             ctx,
             policy,
             optimizer,
-            rng,
             episode,
         )
         print(

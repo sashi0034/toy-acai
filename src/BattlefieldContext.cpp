@@ -97,14 +97,14 @@ namespace
         constexpr double initialSpeed = 150.0;
         context.missiles.push_back(MissileState{
             context.nextMissileId++,
+            shooter.teamId,
+            shooterIndex,
+            targetIndex,
             shooter.position + forward * (FighterSize * 0.75),
             shooter.yaw,
             initialSpeed,
             0.0,
             0.0,
-            shooter.teamId,
-            shooterIndex,
-            targetIndex,
         });
 
         constexpr double cooldown = 3.5;

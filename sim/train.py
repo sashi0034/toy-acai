@@ -9,27 +9,28 @@ from .rl.policy import Policy
 from .rl.rule_based_ai import RuleBasedAI
 from .rl.returns import compute_returns, normalize_returns
 
+from .core import core
 from .simulation_context import SimulationContext, output_path
 from . import constants
 from . import hyperparameters
 
 
 def setup_battlefield(ctx: SimulationContext):
-    ctx.m.init_battlefield(ctx.battlefiled)
+    core.init_battlefield(ctx.battlefield)
 
-    for fighter in ctx.battlefiled.fighters:
+    for fighter in ctx.battlefield.fighters:
         fighter.health = 0.0
 
-    blue = ctx.battlefiled.fighters[0]
-    blue.position = ctx.m.Vec2(240.0, 450.0)
+    blue = ctx.battlefield.fighters[0]
+    blue.position = core.Vec2(240.0, 450.0)
     blue.yaw = 0.0
     blue.health = 1.0
     blue.missile_cooldown = 0.0
     blue.out_of_bounds_time = 0.0
 
     for fighter_index, position in ((4, (1360.0, 300.0)), (5, (1360.0, 600.0))):
-        fighter = ctx.battlefiled.fighters[fighter_index]
-        fighter.position = ctx.m.Vec2(*position)
+        fighter = ctx.battlefield.fighters[fighter_index]
+        fighter.position = core.Vec2(*position)
         fighter.yaw = math.pi
         fighter.health = 1.0
         fighter.missile_cooldown = 0.0
@@ -38,20 +39,20 @@ def setup_battlefield(ctx: SimulationContext):
 
 def random_inputs(ctx: SimulationContext, rng):
     return [
-        ctx.m.FighterInput(
+        core.FighterInput(
             rng.uniform(-1.0, 1.0),
             rng.uniform(-1.0, 1.0),
             rng.random() < 0.15,
         )
-        for _ in range(ctx.m.FIGHTER_COUNT)
+        for _ in range(core.FIGHTER_COUNT)
     ]
 
 
 def is_terminal(ctx: SimulationContext) -> bool:
-    blue = ctx.battlefiled.fighters[0]
+    blue = ctx.battlefield.fighters[0]
     red_alive = any(
         fighter.health > 0.0 and fighter.team_id == 1
-        for fighter in ctx.battlefiled.fighters
+        for fighter in ctx.battlefield.fighters
     )
     return blue.health <= 0.0 or not red_alive
 
@@ -59,11 +60,11 @@ def is_terminal(ctx: SimulationContext) -> bool:
 def step_reward(ctx: SimulationContext, blue_was_alive: bool) -> float:
     reward = 0.0
 
-    for hit_event in ctx.battlefiled.hit_events:
+    for hit_event in ctx.battlefield.hit_events:
         if hit_event.shooter_fighter_index == 0:
             reward += 1.0
 
-    if blue_was_alive and ctx.battlefiled.fighters[0].health <= 0.0:
+    if blue_was_alive and ctx.battlefield.fighters[0].health <= 0.0:
         reward -= 1.0
 
     return reward
@@ -95,14 +96,14 @@ def run_episode(
     optimizer: torch.optim.Optimizer,
     episode: int,
 ):
-    battlefiled = ctx.battlefiled
+    battlefield = ctx.battlefield
     device = next(policy.parameters()).device
     policy.train()
 
     render = (episode + 1) % 50 == 0  # TODO
     if render:
-        ctx.renderer = ctx.m.BattlefieldRenderer()
-        ctx.renderer.enable_render_to_image_buffer(ctx.m.Size(*constants.RENDER_SIZE))
+        ctx.renderer = core.BattlefieldRenderer()
+        ctx.renderer.enable_render_to_image_buffer(core.Size(*constants.RENDER_SIZE))
     renderer = ctx.renderer
 
     setup_battlefield(ctx)
@@ -129,22 +130,22 @@ def run_episode(
         action_tensor, log_prob = policy.sample_action(obs_tensor)
         acceleration, turn, fire = action_tensor.detach().cpu().tolist()
 
-        inputs = [ctx.m.FighterInput() for _ in range(ctx.m.FIGHTER_COUNT)]
-        inputs[0] = ctx.m.FighterInput(acceleration, turn, fire >= 0.5)
+        inputs = [core.FighterInput() for _ in range(core.FIGHTER_COUNT)]
+        inputs[0] = core.FighterInput(acceleration, turn, fire >= 0.5)
         for fighter_index, enemy_input in enemy_ai.inputs(ctx).items():
             inputs[fighter_index] = enemy_input
 
-        blue_was_alive = battlefiled.fighters[0].health > 0.0
+        blue_was_alive = battlefield.fighters[0].health > 0.0
 
-        ctx.m.update_battlefield(battlefiled, inputs, constants.SIMULATION_DELTA_TIME)
+        core.update_battlefield(battlefield, inputs, constants.SIMULATION_DELTA_TIME)
         rewards.append(step_reward(ctx, blue_was_alive))
         log_probs.append(log_prob)
 
         if render:
-            renderer.update(battlefiled, constants.SIMULATION_DELTA_TIME)
+            renderer.update(battlefield, constants.SIMULATION_DELTA_TIME)
 
             if step % render_every_steps == 0:
-                renderer.render(battlefiled)
+                renderer.render(battlefield)
                 frames.append(
                     Image.fromarray(renderer.image_buffer(), mode="RGBA").copy()
                 )

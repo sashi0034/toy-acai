@@ -9,7 +9,9 @@ layout used by the old simulator.
 from __future__ import annotations
 
 import math
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
+
+from ..core import core
 
 if TYPE_CHECKING:
     from ..simulation_context import SimulationContext
@@ -45,9 +47,9 @@ class RuleBasedAI:
         self._turn_pause_remaining.clear()
         self._turn_direction_sign.clear()
 
-    def inputs(self, ctx: SimulationContext) -> dict[int, Any]:
+    def inputs(self, ctx: SimulationContext) -> dict[int, core.FighterInput]:
         """Return ``FighterInput`` values keyed by controlled fighter index."""
-        fighters = ctx.battlefiled.fighters
+        fighters = ctx.battlefield.fighters
         target_team_id = 1 - self.team_id
         target_indices = [
             index
@@ -55,7 +57,7 @@ class RuleBasedAI:
             if fighter.team_id == target_team_id and fighter.health > 0.0
         ]
 
-        inputs: dict[int, Any] = {}
+        inputs: dict[int, core.FighterInput] = {}
         for fighter_index, fighter in enumerate(fighters):
             if fighter.team_id != self.team_id or fighter.health <= 0.0:
                 continue
@@ -65,9 +67,9 @@ class RuleBasedAI:
                     target_indices,
                     key=lambda index: self._distance_squared(fighter, fighters[index]),
                 )
-                relative_pose = ctx.m.compute_relative_pose(
-                    ctx.m.AbsolutePose(fighter),
-                    ctx.m.AbsolutePose(fighters[target_index]),
+                relative_pose = core.compute_relative_pose(
+                    core.AbsolutePose(fighter),
+                    core.AbsolutePose(fighters[target_index]),
                 )
                 # compute_relative_pose uses x=right and y=forward in local
                 # coordinates.  Thus atan2(right, forward) is the yaw error.
@@ -81,7 +83,7 @@ class RuleBasedAI:
                 turn = self._turn_toward_battlefield_center(ctx, fighter)
                 fire = False
 
-            inputs[fighter_index] = ctx.m.FighterInput(
+            inputs[fighter_index] = core.FighterInput(
                 CRUISE_ACCELERATION,
                 self._apply_turn_pause_rule(fighter_index, turn),
                 fire,
@@ -90,15 +92,17 @@ class RuleBasedAI:
         return inputs
 
     @staticmethod
-    def _distance_squared(first: Any, second: Any) -> float:
+    def _distance_squared(
+        first: core.FighterState, second: core.FighterState
+    ) -> float:
         dx = first.position.x - second.position.x
         dy = first.position.y - second.position.y
         return dx * dx + dy * dy
 
     def _turn_toward_battlefield_center(
-        self, ctx: SimulationContext, fighter: Any
+        self, ctx: SimulationContext, fighter: core.FighterState
     ) -> float:
-        area = ctx.battlefiled.battlefield_area
+        area = ctx.battlefield.battlefield_area
         if (
             EDGE_MARGIN <= fighter.position.x <= area.w - EDGE_MARGIN
             and EDGE_MARGIN <= fighter.position.y <= area.h - EDGE_MARGIN

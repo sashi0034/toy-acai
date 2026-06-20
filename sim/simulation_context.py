@@ -1,20 +1,11 @@
 import os
 from pathlib import Path
-import sys
+
+from .core import core, module_path
 
 
 def repository_root():
     return Path(__file__).resolve().parents[1]
-
-
-def module_path():
-    path = repository_root() / "linux-python" / "build"
-    if not path.exists():
-        raise FileNotFoundError(
-            f"toy_acai_core was not built: {path}. "
-            "Build it with: cmake --build linux-python/build"
-        )
-    return path
 
 
 def output_path():
@@ -23,13 +14,7 @@ def output_path():
 
 class SimulationContext:
     def __init__(self):
-        sys.path.insert(0, str(module_path()))
         os.chdir(module_path())
 
-        import toy_acai_core
-
-        self.m = toy_acai_core  # TODO: もっと良いやり方があるか調査
-
-        self.battlefiled = self.m.BattlefieldContext()
-
-        self.renderer = self.m.BattlefieldRenderer()
+        self.battlefield: core.BattlefieldContext = core.BattlefieldContext()
+        self.renderer: core.BattlefieldRenderer = core.BattlefieldRenderer()

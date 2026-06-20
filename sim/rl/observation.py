@@ -1,13 +1,14 @@
 import math
 
 import torch
+from ..core import core
 from ..simulation_context import SimulationContext
 
 
 def _collect_alive_fighters(ctx: SimulationContext, team_id: int):
     return [
         fighter
-        for fighter in ctx.battlefiled.fighters
+        for fighter in ctx.battlefield.fighters
         if fighter.health > 0.0 and fighter.team_id == team_id
     ]
 
@@ -19,14 +20,14 @@ OBS_DIM = SELF_FEATURES + 2 * ENTITY_FEATURES + 2 * ENTITY_FEATURES
 
 def build_observation(ctx: SimulationContext):
     values = []
-    battlefield_diagonal = ctx.battlefiled.battlefield_diagonal_length
+    battlefield_diagonal = ctx.battlefield.battlefield_diagonal_length
 
     # 自機情報
-    fighter = ctx.battlefiled.fighters[0]
+    fighter = ctx.battlefield.fighters[0]
     values.append(fighter.speed)
     values.append(fighter.missile_cooldown > 0)  # TODO: missile_cooldown_rate
 
-    forward_distance = ctx.m.compute_forward_distance_from_boundary(ctx.battlefiled, 0)
+    forward_distance = core.compute_forward_distance_from_boundary(ctx.battlefield, 0)
     values.append(forward_distance.distance / battlefield_diagonal)
     values.append(math.cos(forward_distance.relative_angle))
     values.append(math.sin(forward_distance.relative_angle))
@@ -35,8 +36,8 @@ def build_observation(ctx: SimulationContext):
     alive_enemies = _collect_alive_fighters(ctx, team_id=1)
     enemy_futures = []
     for enemy in alive_enemies:
-        relative_pose = ctx.m.compute_relative_pose(
-            ctx.m.AbsolutePose(fighter), ctx.m.AbsolutePose(enemy)
+        relative_pose = core.compute_relative_pose(
+            core.AbsolutePose(fighter), core.AbsolutePose(enemy)
         )
         enemy_futures.append((relative_pose, enemy.speed))
 
@@ -60,13 +61,13 @@ def build_observation(ctx: SimulationContext):
             values.extend([0.0] * ENTITY_FEATURES)
 
     # 敵ミサイル情報
-    fighter_pose = ctx.m.AbsolutePose(fighter)
+    fighter_pose = core.AbsolutePose(fighter)
     missile_futures = []
-    for missile in ctx.battlefiled.missiles:
+    for missile in ctx.battlefield.missiles:
         if missile.team_id == fighter.team_id:
             continue
-        relative_pose = ctx.m.compute_relative_pose(
-            fighter_pose, ctx.m.AbsolutePose(missile)
+        relative_pose = core.compute_relative_pose(
+            fighter_pose, core.AbsolutePose(missile)
         )
         missile_futures.append((relative_pose, missile.speed))
 

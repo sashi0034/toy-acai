@@ -1,86 +1,19 @@
 #!/usr/bin/env python3
-import math
 import random
 from pathlib import Path
 
 from PIL import Image
 import torch
 
+from .rl.curriculum import Curriculum, MoveCurriculum
 from .rl.observation import OBS_DIM, build_observation
 from .rl.policy import Policy
-from .rl.rule_based_ai import RuleBasedAI
 from .rl.returns import compute_returns, normalize_returns
 
 from .core import core
 from .simulation_context import SimulationContext
 from . import constants
 from . import hyperparameters
-
-
-def setup_battlefield(ctx: SimulationContext, rng: random.Random):
-    core.init_battlefield(ctx.battlefield)
-
-    for fighter in ctx.battlefield.fighters:
-        fighter.health = 0.0
-
-    active_fighter_indices = [
-        # 自機
-        0,
-        # 敵機
-        4,
-        5,
-    ]
-
-    player_position = core.Vec2(0, 0)
-    for fighter_index in active_fighter_indices:
-        fighter = ctx.battlefield.fighters[fighter_index]
-        fighter.health = 1.0
-
-        MARGIN = 40  # px
-        SPAN_DISTANCE = 400  # px
-
-        area = ctx.battlefield.battlefield_area.size
-
-        random_x = 0.0
-        random_y = 0.0
-        for _ in range(1000):
-            random_x = MARGIN + (area.x - 2 * MARGIN) * rng.random()
-            random_y = MARGIN + (area.y - 2 * MARGIN) * rng.random()
-
-            if fighter_index == 0:
-                player_position = core.Vec2(random_x, random_y)
-                break
-            elif (  # 敵機は自機から一定距離以上離す
-                player_position.distance_from_sq(core.Vec2(random_x, random_y))
-                >= SPAN_DISTANCE**2
-            ):
-                break
-
-        fighter.position = core.Vec2(random_x, random_y)
-
-        fighter.yaw = 2 * math.pi * rng.random()
-
-
-def is_terminal(ctx: SimulationContext) -> bool:
-    blue = ctx.battlefield.fighters[0]
-    red_alive = any(
-        fighter.health > 0.0 and fighter.team_id == 1
-        for fighter in ctx.battlefield.fighters
-    )
-    return blue.health <= 0.0 or not red_alive
-
-
-def step_reward(ctx: SimulationContext, blue_was_alive: bool) -> float:
-    reward = 0.0
-
-    for hit_event in ctx.battlefield.hit_events:
-        if hit_event.shooter_fighter_index == 0:
-            reward += 1.0
-
-    if blue_was_alive and ctx.battlefield.fighters[0].health <= 0.0:
-        reward -= 1.0
-
-    return reward
 
 
 def save_gif(frames: list[Image.Image], render_path: Path):
@@ -103,6 +36,7 @@ def save_gif(frames: list[Image.Image], render_path: Path):
 def run_episode(
     ctx: SimulationContext,
     policy: Policy,
+    curriculum: Curriculum,
     rng: random.Random,
     render_path: Path | None = None,
 ):
@@ -116,10 +50,7 @@ def run_episode(
         ctx.renderer.enable_render_to_image_buffer(core.Size(*constants.RENDER_SIZE))
     renderer = ctx.renderer
 
-    setup_battlefield(ctx, rng)
-
-    enemy_ai = RuleBasedAI(team_id=1)
-    enemy_ai.reset()
+    curriculum.setup_battlefield(ctx, rng)
 
     frames = []
     max_step_count = round(
@@ -135,20 +66,26 @@ def run_episode(
     # シミュレーションループ
     step = 0
     for step in range(1, max_step_count + 1):
-        obs_tensor = build_observation(ctx).to(device)
+        curriculum.before_step(ctx, rng)
 
+        # ニューラルネットワークに入力する観測を構築し、アクションをサンプリングする
+        obs_tensor = build_observation(ctx).to(device)
         action_tensor, log_prob = policy.sample_action(obs_tensor)
         acceleration, turn, fire = action_tensor.detach().cpu().tolist()
 
+        # 入力
         inputs = [core.FighterInput() for _ in range(core.FIGHTER_COUNT)]
+
         inputs[0] = core.FighterInput(acceleration, turn, fire >= 0.5)
-        for fighter_index, enemy_input in enemy_ai.inputs(ctx).items():
+
+        for fighter_index, enemy_input in curriculum.opponent_inputs(ctx, rng).items():
             inputs[fighter_index] = enemy_input
 
         blue_was_alive = battlefield.fighters[0].health > 0.0
 
         core.update_battlefield(battlefield, inputs, constants.SIMULATION_DELTA_TIME)
-        rewards.append(step_reward(ctx, blue_was_alive))
+
+        rewards.append(curriculum.step_reward(ctx, blue_was_alive))
         log_probs.append(log_prob)
 
         if render:
@@ -160,7 +97,7 @@ def run_episode(
                     Image.fromarray(renderer.image_buffer(), mode="RGBA").copy()
                 )
 
-        if is_terminal(ctx):
+        if curriculum.is_terminal(ctx):
             break
 
     # 報酬の割引和を計算し、正規化する
@@ -172,6 +109,7 @@ def run_episode(
     if render:
         assert render_path is not None
         save_gif(frames, render_path)
+    curriculum.record_episode()
     return sum(rewards), loss, step
 
 
@@ -186,6 +124,8 @@ def run():
     obs_dim = OBS_DIM
     policy = Policy(obs_dim, hidden_dim=hyperparameters.HIDDEN_DIM).to(device)
     optimizer = torch.optim.Adam(policy.parameters(), lr=hyperparameters.LEARNING_RATE)
+
+    curriculum = MoveCurriculum(ctx)
 
     for update in range(hyperparameters.NUM_UPDATES):
         batch_rewards = []
@@ -209,6 +149,7 @@ def run():
             total_reward, loss, steps = run_episode(
                 ctx,
                 policy,
+                curriculum,
                 rng,
                 render_path,
             )
@@ -225,10 +166,16 @@ def run():
 
         print(
             f"update={update + 1} episodes={hyperparameters.EPISODES_PER_UPDATE} "
+            f"curriculum={curriculum.name} "
             f"reward={sum(batch_rewards) / len(batch_rewards):.2f} "
             f"loss={loss.item():.4f} "
             f"steps={sum(batch_steps) / len(batch_steps):.1f} "
         )
+
+        next_curriculum = curriculum.after_update(ctx)
+        if next_curriculum is not None:
+            print(f"Curriculum promoted: {curriculum.name} -> {next_curriculum.name}")
+            curriculum = next_curriculum
 
 
 if __name__ == "__main__":

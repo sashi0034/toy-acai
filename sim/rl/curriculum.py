@@ -3,8 +3,6 @@ import random
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
-from sim.math_utils import clamp
-
 from .. import constants
 from ..core import core
 from ..simulation_context import SimulationContext
@@ -18,8 +16,9 @@ MOVE_CURRICULUM_UPDATES = 10
 PROMOTION_SUCCESS_RATE = 0.8
 
 
+# 初期カリキュラム
 def initial_curriculum(ctx: SimulationContext) -> "Curriculum":
-    return MissileSurvivalCurriculum(ctx)
+    return MoveCurriculum(ctx)
 
 
 def _is_inside_battlefield(ctx: SimulationContext, position: core.Vec2) -> bool:
@@ -76,7 +75,7 @@ def _is_combat_terminal(ctx: SimulationContext, opponent_count: int) -> bool:
     return agent.health <= 0.0 or (opponent_count > 0 and not red_alive)
 
 
-def _combat_step_reward(
+def _kill_death_reward(
     ctx: SimulationContext, previous_battlefield: core.BattlefieldContext
 ) -> float:
     reward = sum(
@@ -198,10 +197,7 @@ class MoveCurriculum(Curriculum):
                 * constants.SIMULATION_DELTA_TIME
             )
         else:
-            return (
-                -clamp(agent.out_of_bounds_time * 2.0, 1.0, 2.0)
-                * constants.SIMULATION_DELTA_TIME
-            )
+            return -1.0 * constants.SIMULATION_DELTA_TIME
 
     def record_episode(self):
         self.progress.record_episode(_is_agent_winner(self.ctx, opponent_count=0))
@@ -298,10 +294,7 @@ class MissileSurvivalCurriculum(Curriculum):
                 * constants.SIMULATION_DELTA_TIME
             )
         else:
-            return (
-                -clamp(agent.out_of_bounds_time * 2.0, 1.0, 2.0)
-                * constants.SIMULATION_DELTA_TIME
-            )
+            return -1.0 * constants.SIMULATION_DELTA_TIME
 
     def record_episode(self):
         self.progress.record_episode(_is_agent_winner(self.ctx, opponent_count=0))
@@ -350,7 +343,46 @@ class RandomOpponentCurriculum(Curriculum):
         previous_battlefield: core.BattlefieldContext,
         inputs: list[core.FighterInput],
     ) -> float:
-        return _combat_step_reward(ctx, previous_battlefield)
+        agent = ctx.battlefield.fighters[AGENT_FIGHTER_INDICES]
+
+        # 場外ペナルティ
+        reward = 0
+        if _is_inside_battlefield(ctx, agent.position):
+            reward += -1.0 * constants.SIMULATION_DELTA_TIME
+
+        # 低速ペナルティ
+        if agent.speed < 50.0 and inputs[AGENT_FIGHTER_INDICES].acceleration <= 0.0:
+            reward += -0.1 * constants.SIMULATION_DELTA_TIME
+
+        # 撃破と被弾報酬
+        reward += _kill_death_reward(ctx, previous_battlefield) * 5
+
+        nearest_opponent = min(
+            (
+                fighter
+                for fighter in ctx.battlefield.fighters
+                if fighter.team_id == 1 and fighter.health > 0.0
+            ),
+            key=lambda fighter: agent.position.distance_from_sq(fighter.position),
+            default=None,
+        )
+        if nearest_opponent is not None and agent.health > 0.0:
+            relative_pose = core.compute_relative_pose(
+                core.AbsolutePose(agent), core.AbsolutePose(nearest_opponent)
+            )
+
+            # 近距離で敵機に正面を向けている場合は報酬を与える
+            if (
+                relative_pose.relative_position.length_sq() < 200.0**2
+                and math.sin(relative_pose.relative_yaw) > math.sqrt(2) / 2
+            ):
+                reward += (
+                    0.1
+                    * math.cos(relative_pose.relative_yaw)
+                    * constants.SIMULATION_DELTA_TIME
+                )
+
+        return reward
 
     def record_episode(self):
         self.progress.record_episode(
@@ -394,7 +426,7 @@ class RuleBasedOpponentCurriculum(Curriculum):
         previous_battlefield: core.BattlefieldContext,
         inputs: list[core.FighterInput],
     ) -> float:
-        return _combat_step_reward(ctx, previous_battlefield)
+        return _kill_death_reward(ctx, previous_battlefield)
 
     def record_episode(self):
         self.progress.record_episode(

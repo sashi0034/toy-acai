@@ -15,6 +15,7 @@ from .core import core
 from .simulation_context import SimulationContext
 from . import constants
 from . import hyperparameters
+from ._slack import create_poster
 
 
 def run_episode(
@@ -106,6 +107,9 @@ def run():
 
     print(f"Output directory: {ctx.output_directory()}")
 
+    poster = create_poster(ctx.output_directory(), Path(__file__).resolve().parents[1])
+    poster.start()
+
     # PyTorch 準備
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -134,6 +138,7 @@ def run():
                 else None
             )
 
+            # 単一エピソードを実行して報酬と損失を計算する
             total_reward, loss, steps = run_episode(
                 ctx,
                 policy,
@@ -141,6 +146,14 @@ def run():
                 rng,
                 render_path,
             )
+
+            # レンダリング結果投稿
+            if render_path is not None and render_path.exists():
+                poster.post_file(
+                    render_path,
+                    f"toy-acai sim update {update + 1}: reward={total_reward:.3f}",
+                    f"update_{update:06d}_{episode_in_update:04d}",
+                )
 
             batch_rewards.append(total_reward)
             batch_losses.append(loss)

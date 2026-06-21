@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import random
+from collections import deque
 from pathlib import Path
 
 from PIL import Image
@@ -16,6 +17,65 @@ from .simulation_context import SimulationContext
 from . import constants
 from . import hyperparameters
 from ._slack import create_poster
+
+
+def _copy_inputs(inputs: list[core.FighterInput]) -> list[core.FighterInput]:
+    return [
+        core.FighterInput(
+            fighter_input.acceleration, fighter_input.turn, fighter_input.fire
+        )
+        for fighter_input in inputs
+    ]
+
+
+def _try_create_teacher_data(
+    battlefield_history: deque[core.BattlefieldContext],
+    inputs_history: deque[list[core.FighterInput]],
+) -> list[tuple[torch.Tensor, torch.Tensor]]:
+    """
+    過去に巻き戻し、直前で回避行動可能ならそれを教師データとする
+    """
+
+    past_battlefield = core.BattlefieldContext(battlefield_history[0])
+
+    # 過去入力が左旋回をやっていたら、右急旋回を試してみる
+    override_turn = (
+        1.0
+        if sum(inputs_history[i][0].turn for i in range(len(inputs_history))) < 0.0
+        else -1.0
+    )
+
+    override_action = core.FighterInput(1.0, override_turn, False)
+    override_action_tensor = torch.tensor(
+        [
+            override_action.acceleration,
+            override_action.turn,
+            float(override_action.fire),
+        ]
+    )
+
+    teacher_data = []
+
+    # 過去フレームを新入力でシミュレーション
+    for inputs in inputs_history:
+        # TODO: before_step() が無く、ミサイル発射タイミングが異なる問題への対処
+
+        teacher_data.append(
+            (build_observation(past_battlefield), override_action_tensor)
+        )
+
+        override_inputs = _copy_inputs(inputs)
+        override_inputs[0] = override_action
+
+        core.update_battlefield(
+            past_battlefield, override_inputs, constants.SIMULATION_DELTA_TIME
+        )
+
+        if past_battlefield.fighters[0].health <= 0.0:
+            # 失敗
+            return []
+
+    return teacher_data
 
 
 def run_episode(
@@ -49,13 +109,16 @@ def run_episode(
     rewards = []
     total_reward = 0.0
 
+    battlefield_history: deque[core.BattlefieldContext] = deque(maxlen=30)
+    inputs_history: deque[list[core.FighterInput]] = deque(maxlen=30)
+
     # シミュレーションループ
     step = 0
     for step in range(1, max_step_count + 1):
         curriculum.before_step(ctx, rng)
 
         # ニューラルネットワークに入力する観測を構築し、アクションをサンプリングする
-        obs_tensor = build_observation(ctx).to(device)
+        obs_tensor = build_observation(ctx.battlefield).to(device)
         action_tensor, log_prob = policy.sample_action(obs_tensor)
         acceleration, turn, fire = action_tensor.detach().cpu().tolist()
 
@@ -67,11 +130,13 @@ def run_episode(
         for fighter_index, enemy_input in curriculum.opponent_inputs(ctx, rng).items():
             inputs[fighter_index] = enemy_input
 
-        previous_battlefield = core.BattlefieldContext(battlefield)
+        # 更新直前の状態と入力を直近フレーム分だけ保持する
+        battlefield_history.append(core.BattlefieldContext(battlefield))
+        inputs_history.append(_copy_inputs(inputs))
 
         core.update_battlefield(battlefield, inputs, constants.SIMULATION_DELTA_TIME)
 
-        reward = curriculum.step_reward(ctx, previous_battlefield, inputs)
+        reward = curriculum.step_reward(ctx, battlefield_history[-1], inputs)
         rewards.append(reward)
         total_reward += reward
         log_probs.append(log_prob)
@@ -99,7 +164,17 @@ def run_episode(
         assert render_path is not None
         save_rendered_frames(frames, render_path, constants.RENDER_INTERVAL)
     curriculum.record_episode()
-    return sum(rewards), loss, step
+
+    hit_by_enemy = any(
+        hit_event.target_fighter_index == 0 for hit_event in battlefield.hit_events
+    )
+    teacher_data = (
+        _try_create_teacher_data(battlefield_history, inputs_history)
+        if hit_by_enemy
+        else []
+    )
+
+    return sum(rewards), loss, step, teacher_data
 
 
 def run():
@@ -123,6 +198,7 @@ def run():
         batch_rewards = []
         batch_losses = []
         batch_steps = []
+        teacher_data = []
 
         # 取り敢えず update ごとに同じ乱数シードを使ってみる
         rng = random.Random(0)
@@ -139,7 +215,7 @@ def run():
             )
 
             # 単一エピソードを実行して報酬と損失を計算する
-            total_reward, loss, steps = run_episode(
+            total_reward, loss, steps, episode_teacher_data = run_episode(
                 ctx,
                 policy,
                 curriculum,
@@ -158,9 +234,23 @@ def run():
             batch_rewards.append(total_reward)
             batch_losses.append(loss)
             batch_steps.append(steps)
+            teacher_data.extend(episode_teacher_data)
 
         # 平均損失を計算し、勾配を更新する
         loss = torch.stack(batch_losses).mean()  # loss = - (1/N) * Σ(log π(a|s) * R)
+
+        # 教師データがある場合は、教師あり学習で追加の勾配更新を行う
+        teacher_loss = None
+        if teacher_data and (update % hyperparameters.TEACHER_UPDATE_INTERVAL) == 0:
+            teacher_observations = torch.stack(
+                [observation for observation, _ in teacher_data]
+            ).to(device)
+            teacher_actions = torch.stack([action for _, action in teacher_data]).to(
+                device
+            )
+            teacher_loss = policy.supervised_loss(teacher_observations, teacher_actions)
+            loss += teacher_loss
+
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
@@ -170,6 +260,8 @@ def run():
             f"curriculum={curriculum.name} "
             f"reward={sum(batch_rewards) / len(batch_rewards):.2f} "
             f"loss={loss.item():.4f} "
+            f"teacher_loss={teacher_loss.item() if teacher_loss is not None else 0.0:.4f} "
+            f"teacher_samples={len(teacher_data)} "
             f"steps={sum(batch_steps) / len(batch_steps):.1f} "
         )
 

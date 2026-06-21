@@ -1,12 +1,11 @@
-from ..simulation_context import SimulationContext
 from ..core import core
 
 
 def get_alive_fighters_sorted_by_distance(
-    ctx: SimulationContext, pose: core.AbsolutePose, team_id: int
+    battlefield: core.BattlefieldContext, pose: core.AbsolutePose, team_id: int
 ) -> list[tuple[core.RelativePose, int]]:
     fighter_futures = []
-    for i, fighter in enumerate(ctx.battlefield.fighters):
+    for i, fighter in enumerate(battlefield.fighters):
         if fighter.health <= 0.0 or fighter.team_id != team_id:
             continue
         relative_pose = core.compute_relative_pose(pose, core.AbsolutePose(fighter))
@@ -17,10 +16,10 @@ def get_alive_fighters_sorted_by_distance(
 
 
 def get_missiles_sorted_by_distance(
-    ctx: SimulationContext, pose: core.AbsolutePose, team_id: int
+    battlefield: core.BattlefieldContext, pose: core.AbsolutePose, team_id: int
 ) -> list[tuple[core.RelativePose, int]]:
     missile_futures = []
-    for i, missile in enumerate(ctx.battlefield.missiles):
+    for i, missile in enumerate(battlefield.missiles):
         if missile.team_id != team_id:
             continue
         relative_pose = core.compute_relative_pose(pose, core.AbsolutePose(missile))

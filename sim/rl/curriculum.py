@@ -18,7 +18,7 @@ PROMOTION_SUCCESS_RATE = 0.8
 
 # 初期カリキュラム
 def initial_curriculum(ctx: SimulationContext) -> "Curriculum":
-    return MoveCurriculum(ctx)
+    return MissileSurvivalCurriculum(ctx)
 
 
 def _is_inside_battlefield(ctx: SimulationContext, position: core.Vec2) -> bool:
@@ -283,25 +283,35 @@ class MissileSurvivalCurriculum(Curriculum):
         agent = ctx.battlefield.fighters[AGENT_FIGHTER_INDICES]
         if agent.health <= 0.0:
             return (
-                -10.0
+                -5.0
                 if previous_battlefield.fighters[AGENT_FIGHTER_INDICES].health > 0.0
                 else 0.0
             )
 
-        if _is_inside_battlefield(ctx, agent.position):
+        forward_distance_from_boundary = core.compute_forward_distance_from_boundary(
+            ctx.battlefield, AGENT_FIGHTER_INDICES
+        )
+        if forward_distance_from_boundary.distance > 0.0:
             return (
                 inputs[AGENT_FIGHTER_INDICES].acceleration
                 * constants.SIMULATION_DELTA_TIME
             )
         else:
-            return -1.0 * constants.SIMULATION_DELTA_TIME
+            # 境界法線方向なら最悪ペナルティ、逆向きになるにつれて緩和するイメージ
+            return (
+                -1.0
+                * (1.0 + math.cos(forward_distance_from_boundary.relative_angle))
+                * constants.SIMULATION_DELTA_TIME
+            )
 
     def record_episode(self):
         self.progress.record_episode(_is_agent_winner(self.ctx, opponent_count=0))
 
     def after_update(self, ctx: SimulationContext) -> "Curriculum | None":
         self.progress.complete_update()
-        if self.progress.success_rate >= PROMOTION_SUCCESS_RATE:
+
+        # ミサイル全回避まで続ける
+        if self.progress.success_rate >= 1.0:
             return RandomOpponentCurriculum(ctx)
         return None
 

@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from torch.distributions import Normal, Bernoulli
 
 
@@ -67,3 +68,12 @@ class Policy(nn.Module):
             action = action.squeeze(0)
 
         return action, log_prob
+
+    def supervised_loss(self, observations: torch.Tensor, actions: torch.Tensor):
+        mean, _, fire_logit = self.forward(observations)
+
+        # 平均二乗誤差 (Mean Squared Error)
+        return F.mse_loss(
+            torch.tanh(mean),  # (batch_size, 2)
+            actions[:, :2],
+        )  # + F.binary_cross_entropy_with_logits(fire_logit, actions[:, 2])

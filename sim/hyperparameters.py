@@ -12,8 +12,11 @@ NUM_UPDATES = 5000
 # 1 回のパラメータ更新に使うエピソード数
 EPISODES_PER_UPDATE = 16
 
+# 教師データを用いた更新の頻度
+TEACHER_UPDATE_INTERVAL = 5
+
 # ステップごとの報酬割引率
 REWARD_DISCOUNT = 0.99
 
 # 最大シミュレーション時間 (秒)
-MAX_SIMULATION_SECONDS = 30.0
+MAX_SIMULATION_SECONDS = 15.0

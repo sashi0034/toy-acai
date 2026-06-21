@@ -38,7 +38,7 @@ def run_episode(
 
     frames = []
     max_step_count = round(
-        constants.MAX_SIMULATION_SECONDS / constants.SIMULATION_DELTA_TIME
+        hyperparameters.MAX_SIMULATION_SECONDS / constants.SIMULATION_DELTA_TIME
     )
     render_every_steps = round(
         constants.RENDER_INTERVAL / constants.SIMULATION_DELTA_TIME

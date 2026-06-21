@@ -14,3 +14,6 @@ EPISODES_PER_UPDATE = 16
 
 # ステップごとの報酬割引率
 REWARD_DISCOUNT = 0.99
+
+# 最大シミュレーション時間 (秒)
+MAX_SIMULATION_SECONDS = 30.0

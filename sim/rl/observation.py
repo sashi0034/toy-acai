@@ -4,14 +4,10 @@ import torch
 
 from ..core import core
 from ..simulation_context import SimulationContext
-
-
-def _collect_alive_fighters(ctx: SimulationContext, team_id: int):
-    return [
-        fighter
-        for fighter in ctx.battlefield.fighters
-        if fighter.health > 0.0 and fighter.team_id == team_id
-    ]
+from .observation_utils import (
+    get_alive_fighters_sorted_by_distance,
+    get_missiles_sorted_by_distance,
+)
 
 
 SELF_FEATURES = 5
@@ -34,53 +30,40 @@ def build_observation(ctx: SimulationContext):
     values.append(math.sin(forward_distance.relative_angle))
 
     # 敵機情報
-    alive_enemies = _collect_alive_fighters(ctx, team_id=1)
-    enemy_futures = []
-    for enemy in alive_enemies:
-        relative_pose = core.compute_relative_pose(
-            core.AbsolutePose(fighter), core.AbsolutePose(enemy)
-        )
-        enemy_futures.append((relative_pose, enemy.speed))
-
-    # 近い順にソート
-    enemy_futures.sort(key=lambda future: future[0].relative_position.length_sq())
+    opponent_futures = get_alive_fighters_sorted_by_distance(
+        ctx, core.AbsolutePose(fighter), team_id=1
+    )
 
     # 最も近い敵機とその次に近い敵機だけ追加
     for i in range(2):
-        if i < len(enemy_futures):
-            relative_pose, speed = enemy_futures[i]
+        if i < len(opponent_futures):
+            relative_pose, opponent_index = opponent_futures[i]
+            opponent = ctx.battlefield.fighters[opponent_index]
             values.append(1.0)  # alive
             values.append(relative_pose.relative_position.x / battlefield_diagonal)
             values.append(relative_pose.relative_position.y / battlefield_diagonal)
             values.append(math.cos(relative_pose.relative_yaw))
             values.append(math.sin(relative_pose.relative_yaw))
-            values.append(speed)
+            values.append(opponent.speed)
         else:
             # 敵機がいない場合は 0 で埋める
             values.extend([0.0] * ENTITY_FEATURES)
 
     # 敵ミサイル情報
-    fighter_pose = core.AbsolutePose(fighter)
-    missile_futures = []
-    for missile in ctx.battlefield.missiles:
-        if missile.team_id == fighter.team_id:
-            continue
-        relative_pose = core.compute_relative_pose(
-            fighter_pose, core.AbsolutePose(missile)
-        )
-        missile_futures.append((relative_pose, missile.speed))
-
-    missile_futures.sort(key=lambda future: future[0].relative_position.length_sq())
+    missile_futures = get_missiles_sorted_by_distance(
+        ctx, core.AbsolutePose(fighter), team_id=1
+    )
 
     for i in range(2):
         if i < len(missile_futures):
-            relative_pose, speed = missile_futures[i]
+            relative_pose, missile_index = missile_futures[i]
+            missile = ctx.battlefield.missiles[missile_index]
             values.append(1.0)  # alive
             values.append(relative_pose.relative_position.x / battlefield_diagonal)
             values.append(relative_pose.relative_position.y / battlefield_diagonal)
             values.append(math.cos(relative_pose.relative_yaw))
             values.append(math.sin(relative_pose.relative_yaw))
-            values.append(speed)
+            values.append(missile.speed)
         else:
             values.extend([0.0] * ENTITY_FEATURES)
 

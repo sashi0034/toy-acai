@@ -287,11 +287,12 @@ namespace toy_acai
 
     void UpdateBattlefield(BattlefieldContext& context, const std::array<FighterInput, FighterCount>& inputs, double deltaTime)
     {
-        context.frameCount++;
         context.deathEvents.clear();
 
         UpdateFighters(context, inputs, deltaTime);
 
         UpdateMissiles(context, deltaTime);
+
+        context.frameCount++;
     }
 }

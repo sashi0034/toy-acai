@@ -21,7 +21,7 @@ namespace toy_acai
 
     struct MissileState
     {
-        std::uint64_t id = -1;
+        std::uint64_t id = static_cast<std::uint64_t>(-1);
         int teamId;
         int firedFrame;
         int shooterFighterIndex;

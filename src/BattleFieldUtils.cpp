@@ -4,17 +4,10 @@
 #include <array>
 #include <cmath>
 #include <limits>
-#include <utility>
 
 namespace
 {
     constexpr double Epsilon = 1e-9;
-
-    struct HalfLine
-    {
-        Vec2 origin;
-        Vec2 direction;
-    };
 
     struct BoundaryEdge
     {
@@ -46,72 +39,6 @@ namespace
         return point.distanceFrom(segmentStart + segment * t);
     }
 
-    double DistancePointToHalfLine(const Vec2& point, const HalfLine& halfLine)
-    {
-        const double directionLengthSq = halfLine.direction.dot(halfLine.direction);
-        if (directionLengthSq <= Epsilon)
-        {
-            return point.distanceFrom(halfLine.origin);
-        }
-
-        const double t = (point - halfLine.origin).dot(halfLine.direction) / directionLengthSq;
-        if (t <= 0.0)
-        {
-            return point.distanceFrom(halfLine.origin);
-        }
-
-        return point.distanceFrom(halfLine.origin + halfLine.direction * t);
-    }
-
-    double HalfLineSegmentIntersectionDistance(const HalfLine& halfLine, const BoundaryEdge& edge)
-    {
-        const Vec2 segment = edge.end - edge.start;
-        const double directionLength = halfLine.direction.length();
-        if (directionLength <= Epsilon)
-        {
-            return std::numeric_limits<double>::max();
-        }
-
-        const double denominator = halfLine.direction.cross(segment);
-        const Vec2 toSegmentStart = edge.start - halfLine.origin;
-        if (std::abs(denominator) <= Epsilon)
-        {
-            if (std::abs(toSegmentStart.cross(halfLine.direction)) > Epsilon)
-            {
-                return std::numeric_limits<double>::max();
-            }
-
-            const double directionLengthSq = halfLine.direction.dot(halfLine.direction);
-            const double t0 = (edge.start - halfLine.origin).dot(halfLine.direction) / directionLengthSq;
-            const double t1 = (edge.end - halfLine.origin).dot(halfLine.direction) / directionLengthSq;
-            const double maxT = std::max(t0, t1);
-            if (maxT < -Epsilon)
-            {
-                return std::numeric_limits<double>::max();
-            }
-
-            return std::max(0.0, std::min(t0, t1)) * directionLength;
-        }
-
-        const double halfLineT = toSegmentStart.cross(segment) / denominator;
-        const double segmentT = toSegmentStart.cross(halfLine.direction) / denominator;
-        if (halfLineT < -Epsilon || segmentT < -Epsilon || 1.0 + Epsilon < segmentT)
-        {
-            return std::numeric_limits<double>::max();
-        }
-
-        return std::max(0.0, halfLineT) * directionLength;
-    }
-
-    double DistanceHalfLineToSegment(const HalfLine& halfLine, const BoundaryEdge& edge)
-    {
-        return std::min({
-            DistancePointToHalfLine(edge.start, halfLine),
-            DistancePointToHalfLine(edge.end, halfLine),
-            DistancePointToSegment(halfLine.origin, edge.start, edge.end),
-        });
-    }
-
     double RelativeAngleFromEdge(const BoundaryEdge& edge, double yaw)
     {
         const double normalAngle = std::atan2(edge.outwardNormal.y, edge.outwardNormal.x);
@@ -121,14 +48,10 @@ namespace
 
 namespace toy_acai
 {
-    DistanceFromBoundary ComputeForwardDistanceFromBoundary(const BattlefieldContext& context, int fighterIndex)
+    DistanceFromBoundary ComputeDistanceFromBoundary(const BattlefieldContext& context, int fighterIndex)
     {
         const auto& area = context.battlefieldArea;
         const auto& fighter = context.fighters[fighterIndex];
-        const HalfLine forward{
-            fighter.position,
-            Vec2{std::cos(fighter.yaw), std::sin(fighter.yaw)},
-        };
 
         const std::array<BoundaryEdge, 4> edges{
             BoundaryEdge{Vec2{0.0, 0.0}, Vec2{area.w, 0.0}, Vec2{0.0, -1.0}},
@@ -138,28 +61,14 @@ namespace toy_acai
         };
 
         const BoundaryEdge* nearestEdge = nullptr;
-        double nearestIntersectionDistance = std::numeric_limits<double>::max();
+        double distance = std::numeric_limits<double>::max();
         for (const auto& edge : edges)
         {
-            const double distance = HalfLineSegmentIntersectionDistance(forward, edge);
-            if (distance < nearestIntersectionDistance)
+            const double edgeDistance = DistancePointToSegment(fighter.position, edge.start, edge.end);
+            if (edgeDistance < distance)
             {
-                nearestIntersectionDistance = distance;
+                distance = edgeDistance;
                 nearestEdge = &edge;
-            }
-        }
-
-        double distance = nearestIntersectionDistance;
-        if (nearestEdge == nullptr || nearestIntersectionDistance == std::numeric_limits<double>::max())
-        {
-            for (const auto& edge : edges)
-            {
-                const double edgeDistance = DistanceHalfLineToSegment(forward, edge);
-                if (edgeDistance < distance)
-                {
-                    distance = edgeDistance;
-                    nearestEdge = &edge;
-                }
             }
         }
 

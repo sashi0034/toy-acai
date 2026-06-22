@@ -1,7 +1,6 @@
 import math
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from enum import Enum
 
 from .. import constants
 from ..core import core
@@ -146,8 +145,38 @@ class Curriculum(ABC):
     def is_success(self, ctx: WorkerContext) -> bool: ...
 
 
+class CurriculumConfig(ABC):
+    @property
+    @abstractmethod
+    def name(self) -> str: ...
+
+    @abstractmethod
+    def create_episode(self) -> Curriculum: ...
+
+    @abstractmethod
+    def next_config(
+        self, progress: CurriculumProgress
+    ) -> "CurriculumConfig | None": ...
+
+
 class MoveCurriculum(Curriculum):
     name = "move"
+
+    class Config(CurriculumConfig):
+        @property
+        def name(self) -> str:
+            return MoveCurriculum.name
+
+        def create_episode(self) -> Curriculum:
+            return MoveCurriculum()
+
+        def next_config(self, progress: CurriculumProgress) -> CurriculumConfig | None:
+            if (
+                progress.update_count >= MOVE_CURRICULUM_UPDATES
+                and progress.success_rate >= PROMOTION_SUCCESS_RATE
+            ):
+                return MissileSurvivalCurriculum.Config()
+            return None
 
     def setup_battlefield(self, ctx: WorkerContext):
         _setup_fighters(ctx, opponent_count=0)
@@ -197,6 +226,20 @@ class MoveCurriculum(Curriculum):
 
 class MissileSurvivalCurriculum(Curriculum):
     name = "missile_survival"
+
+    class Config(CurriculumConfig):
+        @property
+        def name(self) -> str:
+            return MissileSurvivalCurriculum.name
+
+        def create_episode(self) -> Curriculum:
+            return MissileSurvivalCurriculum()
+
+        def next_config(self, progress: CurriculumProgress) -> CurriculumConfig | None:
+            # ミサイル全回避まで続ける
+            if progress.success_rate >= 1.0:
+                return RandomOpponentCurriculum.Config()
+            return None
 
     def __init__(self):
         self.step_count = 0
@@ -278,6 +321,19 @@ class RandomOpponentCurriculum(Curriculum):
     name = "random_opponents_4"
     opponent_count = 4
 
+    class Config(CurriculumConfig):
+        @property
+        def name(self) -> str:
+            return RandomOpponentCurriculum.name
+
+        def create_episode(self) -> Curriculum:
+            return RandomOpponentCurriculum()
+
+        def next_config(self, progress: CurriculumProgress) -> CurriculumConfig | None:
+            if progress.success_rate >= PROMOTION_SUCCESS_RATE:
+                return RuleBasedOpponentCurriculum.Config(opponent_count=1)
+            return None
+
     def setup_battlefield(self, ctx: WorkerContext):
         _setup_fighters(ctx, opponent_count=self.opponent_count)
 
@@ -352,6 +408,25 @@ class RandomOpponentCurriculum(Curriculum):
 
 
 class RuleBasedOpponentCurriculum(Curriculum):
+    class Config(CurriculumConfig):
+        def __init__(self, opponent_count: int):
+            self.opponent_count = opponent_count
+
+        @property
+        def name(self) -> str:
+            return f"rule_based_opponents_{self.opponent_count}"
+
+        def create_episode(self) -> Curriculum:
+            return RuleBasedOpponentCurriculum(self.opponent_count)
+
+        def next_config(self, progress: CurriculumProgress) -> CurriculumConfig | None:
+            if (
+                progress.success_rate >= PROMOTION_SUCCESS_RATE
+                and self.opponent_count < 3
+            ):
+                return RuleBasedOpponentCurriculum.Config(self.opponent_count + 1)
+            return None
+
     def __init__(self, opponent_count: int):
         self.opponent_count = opponent_count
         self.name = f"rule_based_opponents_{opponent_count}"
@@ -382,79 +457,30 @@ class RuleBasedOpponentCurriculum(Curriculum):
         return _kill_death_reward(ctx, previous_battlefield)
 
 
-class CurriculumKind(str, Enum):
-    MOVE = "move"
-    MISSILE_SURVIVAL = "missile_survival"
-    RANDOM_OPPONENTS = "random_opponents"
-    RULE_BASED_OPPONENTS = "rule_based_opponents"
-
-
 class CurriculumController:
-    """親プロセスでカリキュラムの段階と進捗だけを管理する。"""
+    """親プロセスでカリキュラムの段階と進捗だけを管理する"""
 
     def __init__(self):
-        self.kind = CurriculumKind.MOVE
-        self.opponent_count = 0
+        self.config: CurriculumConfig = MoveCurriculum.Config()
         self.progress = CurriculumProgress()
-
-    # TODO: 分岐を簡単化したい
 
     @property
     def name(self) -> str:
-        if self.kind == CurriculumKind.RANDOM_OPPONENTS:
-            return RandomOpponentCurriculum.name
-        if self.kind == CurriculumKind.RULE_BASED_OPPONENTS:
-            return f"rule_based_opponents_{self.opponent_count}"
-        return self.kind.value
+        return self.config.name
 
     def create_episode(self) -> Curriculum:
-        if self.kind == CurriculumKind.MOVE:
-            return MoveCurriculum()
-        if self.kind == CurriculumKind.MISSILE_SURVIVAL:
-            return MissileSurvivalCurriculum()
-        if self.kind == CurriculumKind.RANDOM_OPPONENTS:
-            return RandomOpponentCurriculum()
-        if self.kind == CurriculumKind.RULE_BASED_OPPONENTS:
-            return RuleBasedOpponentCurriculum(self.opponent_count)
-        raise ValueError(f"Unknown curriculum kind: {self.kind}")
+        return self.config.create_episode()
 
     def record_episode(self, is_success: bool):
         self.progress.record_episode(is_success)
 
     def after_update(self) -> tuple[str, str] | None:
         self.progress.complete_update()
-        next_kind = None
-        next_opponent_count = 0
-
-        if self.kind == CurriculumKind.MOVE:
-            if (
-                self.progress.update_count >= MOVE_CURRICULUM_UPDATES
-                and self.progress.success_rate >= PROMOTION_SUCCESS_RATE
-            ):
-                next_kind = CurriculumKind.MISSILE_SURVIVAL
-        elif self.kind == CurriculumKind.MISSILE_SURVIVAL:
-            # ミサイル全回避まで続ける
-            if self.progress.success_rate >= 1.0:
-                next_kind = CurriculumKind.RANDOM_OPPONENTS
-        elif self.kind == CurriculumKind.RANDOM_OPPONENTS:
-            if self.progress.success_rate >= PROMOTION_SUCCESS_RATE:
-                next_kind = CurriculumKind.RULE_BASED_OPPONENTS
-                next_opponent_count = 1
-        elif self.kind == CurriculumKind.RULE_BASED_OPPONENTS:
-            if (
-                self.progress.success_rate >= PROMOTION_SUCCESS_RATE
-                and self.opponent_count < 3
-            ):
-                next_kind = CurriculumKind.RULE_BASED_OPPONENTS
-                next_opponent_count = self.opponent_count + 1
-        else:
-            raise ValueError(f"Unknown curriculum kind: {self.kind}")
-
-        if next_kind is None:
+        next_config = self.config.next_config(self.progress)
+        if next_config is None:
             return None
 
         previous_name = self.name
-        self.kind = next_kind
-        self.opponent_count = next_opponent_count
+        self.config = next_config
         self.progress = CurriculumProgress()
         return previous_name, self.name

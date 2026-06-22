@@ -1,3 +1,4 @@
+from dataclasses import dataclass
 from datetime import datetime
 import os
 from pathlib import Path

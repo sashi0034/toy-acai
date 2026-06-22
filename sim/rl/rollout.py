@@ -15,68 +15,11 @@ from .policy_network import PolicyNetwork
 from .render_utils import render_observation, render_reward, save_rendered_frames
 from .returns import compute_returns, normalize_returns
 from .value_network import ValueNetwork
-
-
-def _copy_inputs(inputs: list[core.FighterInput]) -> list[core.FighterInput]:
-    return [
-        core.FighterInput(
-            fighter_input.acceleration, fighter_input.turn, fighter_input.fire
-        )
-        for fighter_input in inputs
-    ]
-
-
-def _try_create_teacher_data(
-    battlefield_history: deque[core.BattlefieldContext],
-    inputs_history: deque[list[core.FighterInput]],
-) -> list[tuple[torch.Tensor, torch.Tensor]]:
-    """
-    過去に巻き戻し、直前で回避行動可能ならそれを教師データとする
-    """
-
-    past_battlefield = core.BattlefieldContext(battlefield_history[0])
-
-    # 過去入力が左旋回をやっていたら、右急旋回を試してみる
-    override_turn = (
-        1.0
-        if sum(inputs_history[i][0].turn for i in range(len(inputs_history))) < 0.0
-        else -1.0
-    )
-
-    override_action = core.FighterInput(1.0, override_turn, False)
-    override_action_tensor = torch.tensor(
-        [
-            override_action.acceleration,
-            override_action.turn,
-            float(override_action.fire),
-        ]
-    )
-
-    teacher_data = []
-
-    # 過去フレームを新入力でシミュレーション
-    for inputs in inputs_history:
-        # TODO: before_step() が無く、ミサイル発射タイミングが異なる問題への対処
-
-        teacher_data.append(
-            (
-                observation_to_tensor(build_observation(past_battlefield)),
-                override_action_tensor,
-            )
-        )
-
-        override_inputs = _copy_inputs(inputs)
-        override_inputs[0] = override_action
-
-        core.update_battlefield(
-            past_battlefield, override_inputs, constants.SIMULATION_DELTA_TIME
-        )
-
-        if past_battlefield.fighters[0].health <= 0.0:
-            # 失敗
-            return []
-
-    return teacher_data
+from .input_utils import copy_inputs
+from .teacher import (
+    try_create_boundary_recovery_teacher_data,
+    try_create_missile_evasion_teacher_data,
+)
 
 
 @dataclass
@@ -163,7 +106,7 @@ def collect_episode(
 
             # 更新直前の状態と入力を直近フレーム分だけ保持する
             battlefield_history.append(core.BattlefieldContext(battlefield))
-            inputs_history.append(_copy_inputs(inputs))
+            inputs_history.append(copy_inputs(inputs))
 
             core.update_battlefield(
                 battlefield, inputs, constants.SIMULATION_DELTA_TIME
@@ -210,9 +153,13 @@ def collect_episode(
         for death_event in battlefield.death_events
     )
     teacher_data = (
-        _try_create_teacher_data(battlefield_history, inputs_history)
+        try_create_missile_evasion_teacher_data(
+            battlefield_history, inputs_history, curriculum
+        )
         if killed_by_missile
-        else []
+        else try_create_boundary_recovery_teacher_data(
+            battlefield_history, inputs_history, curriculum
+        )
     )
 
     return Rollout(

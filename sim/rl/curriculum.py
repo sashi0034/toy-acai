@@ -243,17 +243,14 @@ class MissileSurvivalCurriculum(Curriculum):
             return None
 
     def __init__(self):
-        self.step_count = 0
+        pass
 
     def setup_battlefield(self, ctx: WorkerContext):
         _setup_fighters(ctx, opponent_count=0)
-        self.step_count = 0
 
     def before_step(self, ctx: WorkerContext):
-        self.step_count += 1  # TODO: battlefield の frameCount を使うようにする
-
         missile_spawn_interval_steps = round(1.5 / constants.SIMULATION_DELTA_TIME)
-        if self.step_count % missile_spawn_interval_steps == 0:
+        if (ctx.battlefield.frame_count + 1) % missile_spawn_interval_steps == 0:
             # ミサイル発射
             self._fire_missile_around_player(ctx)
 

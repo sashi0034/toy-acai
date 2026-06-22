@@ -98,6 +98,7 @@ namespace
         context.missiles.push_back(MissileState{
             context.nextMissileId++,
             shooter.teamId,
+            context.frameCount,
             shooterIndex,
             targetIndex,
             shooter.position + forward * (FighterSize * 0.75),
@@ -157,6 +158,11 @@ namespace
                 constexpr double outOfBoundsDeathTime = 3.0;
                 if (outOfBoundsDeathTime <= fighter.outOfBoundsTime)
                 {
+                    context.deathEvents.push_back(DeathEvent{
+                        DeathEvent::Reason::OutOfBounds,
+                        i,
+                        MissileState{},
+                    });
                     fighter.health = 0.0;
                     continue;
                 }
@@ -228,9 +234,10 @@ namespace
             constexpr double hitRadius = MissileSize;
             if (targetAlive && DistanceSq(missile.position, target->position) <= hitRadius * hitRadius)
             {
-                context.hitEvents.push_back(HitEvent{
-                    missile.shooterFighterIndex,
+                context.deathEvents.push_back(DeathEvent{
+                    DeathEvent::Reason::HitByMissile,
                     missile.targetFighterIndex,
+                    missile,
                 });
                 target->health = 0.0;
                 continue;
@@ -247,11 +254,12 @@ namespace toy_acai
 {
     void InitBattlefield(BattlefieldContext& context)
     {
+        context.frameCount = 0;
         context.screenSize = {1920, 1080};
         context.battlefieldArea = RectF{Arg::center = context.screenSize * 0.5f, Vec2{1600, 900}};
         context.battlefieldDiagonalLength = context.battlefieldArea.size.length();
         context.missiles.clear();
-        context.hitEvents.clear();
+        context.deathEvents.clear();
         context.nextMissileId = 0;
 
         for (int team = 0; team < TeamCount; ++team)
@@ -279,7 +287,8 @@ namespace toy_acai
 
     void UpdateBattlefield(BattlefieldContext& context, const std::array<FighterInput, FighterCount>& inputs, double deltaTime)
     {
-        context.hitEvents.clear();
+        context.frameCount++;
+        context.deathEvents.clear();
 
         UpdateFighters(context, inputs, deltaTime);
 

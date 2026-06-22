@@ -21,8 +21,9 @@ namespace toy_acai
 
     struct MissileState
     {
-        std::uint64_t id;
+        std::uint64_t id = -1;
         int teamId;
+        int firedFrame;
         int shooterFighterIndex;
         int targetFighterIndex;
         Vec2 position; // battlefieldArea.pos からの相対座標
@@ -32,17 +33,25 @@ namespace toy_acai
         double lockLostTime;
     };
 
-    struct HitEvent
+    struct DeathEvent
     {
-        int shooterFighterIndex;
-        int targetFighterIndex;
+        enum class Reason
+        {
+            OutOfBounds,
+            HitByMissile,
+        };
+
+        Reason reason;
+        int fighterIndex;
+        MissileState killerMissile;
     };
 
     struct BattlefieldContext
     {
+        int frameCount;
         std::array<FighterState, TeamCount * TeamFighterCount> fighters;
         std::vector<MissileState> missiles;
-        std::vector<HitEvent> hitEvents;
+        std::vector<DeathEvent> deathEvents;
         std::uint64_t nextMissileId = 0;
         Vec2 screenSize;
         RectF battlefieldArea;

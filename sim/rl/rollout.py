@@ -204,12 +204,14 @@ def collect_episode(
         assert render_path is not None
         save_rendered_frames(frames, render_path, constants.RENDER_INTERVAL)
 
-    hit_by_enemy = any(
-        hit_event.target_fighter_index == 0 for hit_event in battlefield.hit_events
+    killed_by_missile = any(
+        death_event.reason == core.DeathEvent.Reason.HitByMissile
+        and death_event.fighter_index == 0
+        for death_event in battlefield.death_events
     )
     teacher_data = (
         _try_create_teacher_data(battlefield_history, inputs_history)
-        if hit_by_enemy
+        if killed_by_missile
         else []
     )
 

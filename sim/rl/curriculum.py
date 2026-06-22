@@ -74,8 +74,9 @@ def _kill_death_reward(
 ) -> float:
     reward = sum(
         1.0
-        for hit_event in ctx.battlefield.hit_events
-        if hit_event.shooter_fighter_index == AGENT_FIGHTER_INDICES
+        for death_event in ctx.battlefield.death_events
+        if death_event.reason == core.DeathEvent.Reason.HitByMissile
+        and death_event.killer_missile.shooter_fighter_index == AGENT_FIGHTER_INDICES
     )
     if (
         previous_battlefield.fighters[AGENT_FIGHTER_INDICES].health > 0.0

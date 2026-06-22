@@ -3,6 +3,7 @@ import math
 import torch
 
 from ..core import core
+from .. import hyperparameters
 from .observation_utils import (
     get_alive_fighters_sorted_by_distance,
     get_missiles_sorted_by_distance,
@@ -11,7 +12,8 @@ from .observation_utils import (
 
 SELF_FEATURES = 5
 ENTITY_FEATURES = 6
-OBS_DIM = SELF_FEATURES + 2 * ENTITY_FEATURES + 2 * ENTITY_FEATURES
+MISSILE_FEATURES = 6
+OBS_DIM = SELF_FEATURES + 2 * ENTITY_FEATURES + 2 * MISSILE_FEATURES
 
 
 def build_observation(battlefield: core.BattlefieldContext):
@@ -20,7 +22,7 @@ def build_observation(battlefield: core.BattlefieldContext):
 
     # 自機情報
     fighter = battlefield.fighters[0]
-    values.append(fighter.speed)
+    values.append(fighter.speed * hyperparameters.SPEED_NORMALIZATION_FACTOR)
     values.append(fighter.missile_cooldown > 0)  # TODO: missile_cooldown_rate
 
     forward_distance = core.compute_forward_distance_from_boundary(battlefield, 0)
@@ -43,7 +45,7 @@ def build_observation(battlefield: core.BattlefieldContext):
             values.append(relative_pose.relative_position.y / battlefield_diagonal)
             values.append(math.cos(relative_pose.relative_yaw))
             values.append(math.sin(relative_pose.relative_yaw))
-            values.append(opponent.speed)
+            values.append(opponent.speed * hyperparameters.SPEED_NORMALIZATION_FACTOR)
         else:
             # 敵機がいない場合は 0 で埋める
             values.extend([0.0] * ENTITY_FEATURES)
@@ -62,7 +64,7 @@ def build_observation(battlefield: core.BattlefieldContext):
             values.append(relative_pose.relative_position.y / battlefield_diagonal)
             values.append(math.cos(relative_pose.relative_yaw))
             values.append(math.sin(relative_pose.relative_yaw))
-            values.append(missile.speed)
+            values.append(missile.speed * hyperparameters.SPEED_NORMALIZATION_FACTOR)
         else:
             values.extend([0.0] * ENTITY_FEATURES)
 

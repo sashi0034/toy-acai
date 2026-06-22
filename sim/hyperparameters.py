@@ -20,3 +20,6 @@ REWARD_DISCOUNT = 0.99
 
 # 最大シミュレーション時間 (秒)
 MAX_SIMULATION_SECONDS = 15.0
+
+# 観測特徴量の速度を正規化するための係数
+SPEED_NORMALIZATION_FACTOR = 1.0 / 500.0

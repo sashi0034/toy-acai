@@ -9,9 +9,9 @@ import torch
 from .rl.curriculum import Curriculum, initial_curriculum
 from .rl.render_utils import render_observation, render_reward, save_rendered_frames
 from .rl.observation import OBS_DIM, build_observation
-from .rl.policy import PolicyNetwork
+from .rl.policy_network import PolicyNetwork
 from .rl.returns import compute_returns, normalize_returns
-from .rl.value import ValueNetwork
+from .rl.value_network import ValueNetwork
 
 from .core import core
 from .simulation_context import SimulationContext

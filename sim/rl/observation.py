@@ -42,8 +42,8 @@ def build_observation(ctx: SimulationContext):
             values.append(1.0)  # alive
             values.append(relative_pose.relative_position.x / battlefield_diagonal)
             values.append(relative_pose.relative_position.y / battlefield_diagonal)
-            values.append(math.cos(relative_pose.relative_yaw))
-            values.append(math.sin(relative_pose.relative_yaw))
+            values.append(math.cos(relative_pose.relative_bearing))
+            values.append(math.sin(relative_pose.relative_bearing))
             values.append(opponent.speed)
         else:
             # 敵機がいない場合は 0 で埋める
@@ -61,8 +61,8 @@ def build_observation(ctx: SimulationContext):
             values.append(1.0)  # alive
             values.append(relative_pose.relative_position.x / battlefield_diagonal)
             values.append(relative_pose.relative_position.y / battlefield_diagonal)
-            values.append(math.cos(relative_pose.relative_yaw))
-            values.append(math.sin(relative_pose.relative_yaw))
+            values.append(math.cos(relative_pose.relative_bearing))
+            values.append(math.sin(relative_pose.relative_bearing))
             values.append(missile.speed)
         else:
             values.extend([0.0] * ENTITY_FEATURES)

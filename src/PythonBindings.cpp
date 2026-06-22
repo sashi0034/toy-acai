@@ -425,7 +425,7 @@ NB_MODULE(toy_acai_core, m)
     nb::class_<toy_acai::RelativePose>(m, "RelativePose")
         .def(nb::init<>())
         .def_rw("relative_position", &toy_acai::RelativePose::relativePosition)
-        .def_rw("relative_yaw", &toy_acai::RelativePose::relativeYaw);
+        .def_rw("relative_bearing", &toy_acai::RelativePose::relativeBearing);
 
     nb::class_<PythonBattlefieldRenderer>(m, "BattlefieldRenderer")
         .def(nb::init<>())

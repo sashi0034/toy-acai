@@ -100,7 +100,7 @@ class ToyAcaiBindingsTest(unittest.TestCase):
         to_pose = toy_acai_core.AbsolutePose(self.context.fighters[1])
         relative = toy_acai_core.compute_relative_pose(from_pose, to_pose)
         self.assertIsInstance(relative.relative_position, toy_acai_core.Vec2)
-        self.assertIsInstance(relative.relative_yaw, float)
+        self.assertIsInstance(relative.relative_bearing, float)
 
     def test_headless_renderer_returns_rgba_frame(self):
         renderer = toy_acai_core.BattlefieldRenderer()

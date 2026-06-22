@@ -84,10 +84,10 @@ namespace toy_acai
         Vec2 relativePosition = (toPose.position - fromPose.position).rotated(-fromPose.yaw);
         relativePosition = relativePosition.yx();
 
-        const double relativeYaw = toPose.yaw - fromPose.yaw;
+        const double relativeBearing = toPose.yaw - fromPose.yaw;
         return RelativePose{
             relativePosition,
-            relativeYaw
+            relativeBearing
         };
     }
 }

@@ -1,8 +1,9 @@
 from pathlib import Path
+from collections.abc import Sequence
 
 from PIL import Image, ImageDraw, ImageFont
 
-from .observation import ENTITY_FEATURES, MISSILE_FEATURES, SELF_FEATURES
+from .observation import ObservationFeature
 
 
 def render_reward(
@@ -35,34 +36,35 @@ def render_reward(
     return Image.alpha_composite(image, overlay)
 
 
-def render_observation(frame: Image.Image, observation) -> Image.Image:
+def render_observation(
+    frame: Image.Image, features: Sequence[ObservationFeature]
+) -> Image.Image:
     image = frame.convert("RGBA")
     overlay = Image.new("RGBA", image.size, (0, 0, 0, 0))
     draw = ImageDraw.Draw(overlay)
     font = ImageFont.load_default()
 
-    observation = observation.detach().cpu().flatten().tolist()
-    groups = (
-        ("SELF_FEATURES", SELF_FEATURES),
-        ("ENTITY_FEATURES[0]", ENTITY_FEATURES),
-        ("ENTITY_FEATURES[1]", ENTITY_FEATURES),
-        ("MISSILE_FEATURES[0]", MISSILE_FEATURES),
-        ("MISSILE_FEATURES[1]", MISSILE_FEATURES),
-    )
-    assert sum(size for _, size in groups) == len(observation)
+    groups: list[tuple[str, list[ObservationFeature]]] = []
+    for feature in features:
+        if not groups or groups[-1][0] != feature.group:
+            groups.append((feature.group, []))
+        groups[-1][1].append(feature)
 
     padding = 6
     margin = 8
     group_gap = 4
+    column_gap = 8
     line_height = draw.textbbox((0, 0), "+0.000", font=font)[3]
-    text_width = max(
-        draw.textbbox((0, 0), text, font=font)[2]
-        for text in [name for name, _ in groups]
-        + [f"{value:+.3f}" for value in observation]
+    text_width = lambda text: draw.textbbox((0, 0), text, font=font)[2]
+    label_width = max(text_width(feature.name) for feature in features)
+    value_width = max(text_width(f"{feature.value:+.3f}") for feature in features)
+    panel_width = max(
+        max(text_width(group) for group, _ in groups),
+        label_width + column_gap + value_width,
     )
-    panel_width = text_width + padding * 2
+    panel_width += padding * 2
     panel_height = (
-        (len(groups) + len(observation)) * line_height
+        (len(groups) + len(features)) * line_height
         + (len(groups) - 1) * group_gap
         + padding * 2
     )
@@ -74,9 +76,8 @@ def render_observation(frame: Image.Image, observation) -> Image.Image:
         fill=(0, 0, 0, 150),
     )
 
-    value_index = 0
     y = margin + padding
-    for group_index, (name, size) in enumerate(groups):
+    for group_index, (name, group_features) in enumerate(groups):
         if group_index:
             draw.line(
                 (
@@ -87,19 +88,23 @@ def render_observation(frame: Image.Image, observation) -> Image.Image:
                 ),
                 fill=(255, 255, 255, 100),
             )
-        draw.text(
-            (panel_x + padding, y), name, fill=(255, 220, 120, 235), font=font
-        )
+        draw.text((panel_x + padding, y), name, fill=(255, 220, 120, 235), font=font)
         y += line_height
-        for value in observation[value_index : value_index + size]:
+        for feature in group_features:
             draw.text(
                 (panel_x + padding, y),
-                f"{value:+.3f}",
+                feature.name,
+                fill=(255, 255, 255, 235),
+                font=font,
+            )
+            draw.text(
+                (panel_x + panel_width - padding, y),
+                f"{feature.value:+.3f}",
+                anchor="ra",
                 fill=(255, 255, 255, 235),
                 font=font,
             )
             y += line_height
-        value_index += size
         y += group_gap
 
     return Image.alpha_composite(image, overlay)

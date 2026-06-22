@@ -8,7 +8,7 @@ import torch
 
 from .rl.curriculum import Curriculum, initial_curriculum
 from .rl.render_utils import render_observation, render_reward, save_rendered_frames
-from .rl.observation import OBS_DIM, build_observation
+from .rl.observation import OBS_DIM, build_observation, observation_to_tensor
 from .rl.policy_network import PolicyNetwork
 from .rl.returns import compute_returns, normalize_returns
 from .rl.value_network import ValueNetwork
@@ -62,7 +62,10 @@ def _try_create_teacher_data(
         # TODO: before_step() が無く、ミサイル発射タイミングが異なる問題への対処
 
         teacher_data.append(
-            (build_observation(past_battlefield), override_action_tensor)
+            (
+                observation_to_tensor(build_observation(past_battlefield)),
+                override_action_tensor,
+            )
         )
 
         override_inputs = _copy_inputs(inputs)
@@ -123,7 +126,8 @@ def run_episode(
         curriculum.before_step(ctx, rng)
 
         # ニューラルネットワークに入力する観測を構築し、アクションをサンプリングする
-        obs_tensor = build_observation(ctx.battlefield).to(device)
+        observation = build_observation(ctx.battlefield)
+        obs_tensor = observation_to_tensor(observation).to(device)
         action_tensor, log_prob = policy.sample_action(obs_tensor)
         acceleration, turn, fire = action_tensor.detach().cpu().tolist()
 
@@ -159,7 +163,7 @@ def run_episode(
 
                 # FIXME: 前フレームの情報が描画されている
                 frame = render_reward(frame, total_reward, value)
-                frame = render_observation(frame, obs_tensor)
+                frame = render_observation(frame, observation)
 
                 frames.append(frame)
 

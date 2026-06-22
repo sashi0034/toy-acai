@@ -43,7 +43,7 @@ def build_observation(
     # 自機情報
     fighter = battlefield.fighters[0]
     add("AGENT", "speed", fighter.speed * hyperparameters.SPEED_NORMALIZATION_FACTOR)
-    add("AGENT", "missile_cooldown", fighter.missile_cooldown > 0)  # TODO: rate
+    add("AGENT", "missile_available", fighter.missile_cooldown > 0)  # TODO: rate
 
     boundary_distance = core.compute_distance_from_boundary(battlefield, 0)
     add(

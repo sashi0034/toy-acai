@@ -20,6 +20,12 @@ def try_create_missile_evasion_teacher_data(
     過去に巻き戻し、直前で回避行動可能ならそれを教師データとする
     """
 
+    # 直近 30 フレームの履歴を使う
+    context_history = list(context_history)[-30:]
+    inputs_history = list(inputs_history)[-30:]
+    if not context_history:
+        return []
+
     past_ctx = WorkerContext.from_state(context_history[0])
 
     # 過去入力が左旋回をやっていたら、右急旋回を試してみる
@@ -73,6 +79,21 @@ def try_create_boundary_recovery_teacher_data(
     """
     過去に戻して境界外に出ているとき、境界内に戻るように入力調整
     """
+
+    # 境界外に出たフレームからの履歴を使う
+    boundary_entry_index = next(
+        (
+            index
+            for index, state in enumerate(context_history)
+            if state.battlefield.fighters[0].out_of_bounds_time > 0.0
+        ),
+        None,
+    )
+    if boundary_entry_index is None:
+        return []
+
+    context_history = list(context_history)[boundary_entry_index:]
+    inputs_history = list(inputs_history)[boundary_entry_index:]
 
     past_ctx = WorkerContext.from_state(context_history[0])
 

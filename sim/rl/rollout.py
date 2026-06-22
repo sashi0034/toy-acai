@@ -95,8 +95,9 @@ def collect_episode(
     rewards = []
     total_reward = 0.0
 
-    context_history: deque[WorkerContextState] = deque(maxlen=30)
-    inputs_history: deque[list[core.FighterInput]] = deque(maxlen=30)
+    history_length = round(5.0 / constants.SIMULATION_DELTA_TIME) # FIXME?
+    context_history: deque[WorkerContextState] = deque(maxlen=history_length)
+    inputs_history: deque[list[core.FighterInput]] = deque(maxlen=history_length)
 
     # シミュレーションループ
     with torch.no_grad():

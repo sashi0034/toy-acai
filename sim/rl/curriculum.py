@@ -185,12 +185,12 @@ class MoveCurriculum(Curriculum):
         inputs: list[core.FighterInput],
     ) -> float:
         agent = ctx.battlefield.fighters[AGENT_FIGHTER_INDICES]
-        if agent.health <= 0.0:
-            return (
-                -5.0
-                if previous_battlefield.fighters[AGENT_FIGHTER_INDICES].health > 0.0
-                else 0.0
-            )
+        # if agent.health <= 0.0:
+        #     return (
+        #         -5.0
+        #         if previous_battlefield.fighters[AGENT_FIGHTER_INDICES].health > 0.0
+        #         else 0.0
+        #     )
 
         boundary_distance = core.compute_distance_from_boundary(
             ctx.battlefield, AGENT_FIGHTER_INDICES
@@ -290,12 +290,10 @@ class MissileSurvivalCurriculum(Curriculum):
         inputs: list[core.FighterInput],
     ) -> float:
         agent = ctx.battlefield.fighters[AGENT_FIGHTER_INDICES]
-        if agent.health <= 0.0:
-            return (
-                -5.0
-                if previous_battlefield.fighters[AGENT_FIGHTER_INDICES].health > 0.0
-                else 0.0
-            )
+
+        kill_death_reward = _kill_death_reward(ctx, previous_battlefield)
+        if kill_death_reward != 0.0:
+            return kill_death_reward * 1.0
 
         boundary_distance = core.compute_distance_from_boundary(
             ctx.battlefield, AGENT_FIGHTER_INDICES

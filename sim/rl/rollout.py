@@ -37,6 +37,23 @@ class Rollout:
     is_success: bool
 
 
+def _apply_delayed_rewards(
+    rewards: list[float], delayed_rewards: list[tuple[int, float]]
+) -> float:
+    """Add rewards to their zero-based firing-frame positions and return their sum."""
+    total_delayed_reward = 0.0
+    for fired_frame, delayed_reward in delayed_rewards:
+        if not 0 <= fired_frame < len(rewards):
+            print(
+                f"[ERROR] delayed reward fired_frame {fired_frame} is outside the rollout "
+                f"range 0..{len(rewards) - 1}; skipping reward"
+            )
+            continue
+        rewards[fired_frame] += delayed_reward
+        total_delayed_reward += delayed_reward
+    return total_delayed_reward
+
+
 def collect_episode(
     ctx: WorkerContext,
     policy: PolicyNetwork,
@@ -125,6 +142,9 @@ def collect_episode(
             rewards.append(reward)
 
             total_reward += reward
+            total_reward += _apply_delayed_rewards(
+                rewards, curriculum.delayed_reward(ctx)
+            )
 
             if render:
                 assert renderer is not None

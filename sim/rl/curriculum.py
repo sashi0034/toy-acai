@@ -69,21 +69,26 @@ def _is_combat_terminal(ctx: WorkerContext, opponent_count: int) -> bool:
     return agent.health <= 0.0 or (opponent_count > 0 and not red_alive)
 
 
-def _kill_death_reward(
-    ctx: WorkerContext, previous_battlefield: core.BattlefieldContext
+def _agent_death_penalty(
+    ctx: WorkerContext,
+    previous_battlefield: core.BattlefieldContext,
+    fighter_index: int,
 ) -> float:
-    reward = sum(
-        1.0
+    if (
+        previous_battlefield.fighters[fighter_index].health > 0.0
+        and ctx.battlefield.fighters[fighter_index].health <= 0.0
+    ):
+        return 1.0
+    return 0.0
+
+
+def _agent_missile_hit_frames(ctx: WorkerContext, fighter_index: int) -> list[int]:
+    return [
+        death_event.killer_missile.fired_frame
         for death_event in ctx.battlefield.death_events
         if death_event.reason == core.DeathEvent.Reason.HitByMissile
-        and death_event.killer_missile.shooter_fighter_index == AGENT_FIGHTER_INDICES
-    )
-    if (
-        previous_battlefield.fighters[AGENT_FIGHTER_INDICES].health > 0.0
-        and ctx.battlefield.fighters[AGENT_FIGHTER_INDICES].health <= 0.0
-    ):
-        reward -= 1.0
-    return reward
+        and death_event.killer_missile.shooter_fighter_index == fighter_index
+    ]
 
 
 def _is_agent_winner(ctx: WorkerContext, opponent_count: int) -> bool:
@@ -141,6 +146,9 @@ class Curriculum(ABC):
         previous_battlefield: core.BattlefieldContext,
         inputs: list[core.FighterInput],
     ) -> float: ...
+
+    def delayed_reward(self, ctx: WorkerContext) -> list[tuple[int, float]]:
+        return []
 
     @abstractmethod
     def is_success(self, ctx: WorkerContext) -> bool: ...
@@ -296,9 +304,11 @@ class MissileSurvivalCurriculum(Curriculum):
     ) -> float:
         agent = ctx.battlefield.fighters[AGENT_FIGHTER_INDICES]
 
-        kill_death_reward = _kill_death_reward(ctx, previous_battlefield)
-        if kill_death_reward != 0.0:
-            return kill_death_reward * 1.0
+        death_penalty = _agent_death_penalty(
+            ctx, previous_battlefield, AGENT_FIGHTER_INDICES
+        )
+        if death_penalty != 0.0:
+            return -death_penalty
 
         boundary_distance = core.compute_distance_from_boundary(
             ctx.battlefield, AGENT_FIGHTER_INDICES
@@ -360,8 +370,6 @@ class RandomOpponentCurriculum(Curriculum):
     ) -> float:
         agent = ctx.battlefield.fighters[AGENT_FIGHTER_INDICES]
 
-        # TODO: 撃墜報酬を発射時点に遡って与える
-
         # 場外ペナルティ
         reward = 0
         if _is_inside_battlefield(ctx, agent.position):
@@ -371,8 +379,11 @@ class RandomOpponentCurriculum(Curriculum):
         if agent.speed < 50.0 and inputs[AGENT_FIGHTER_INDICES].acceleration <= 0.0:
             reward += -0.1 * constants.SIMULATION_DELTA_TIME
 
-        # 撃破と被弾報酬
-        reward += _kill_death_reward(ctx, previous_battlefield) * 5
+        # 被撃墜ペナルティ
+        reward -= (
+            _agent_death_penalty(ctx, previous_battlefield, AGENT_FIGHTER_INDICES)
+            * 5
+        )
 
         nearest_opponent = min(
             (
@@ -400,6 +411,12 @@ class RandomOpponentCurriculum(Curriculum):
                 )
 
         return reward
+
+    def delayed_reward(self, ctx: WorkerContext) -> list[tuple[int, float]]:
+        return [
+            (fired_frame, 5.0)
+            for fired_frame in _agent_missile_hit_frames(ctx, AGENT_FIGHTER_INDICES)
+        ]
 
 
 class RuleBasedOpponentCurriculum(Curriculum):
@@ -449,7 +466,15 @@ class RuleBasedOpponentCurriculum(Curriculum):
         previous_battlefield: core.BattlefieldContext,
         inputs: list[core.FighterInput],
     ) -> float:
-        return _kill_death_reward(ctx, previous_battlefield)
+        return -_agent_death_penalty(
+            ctx, previous_battlefield, AGENT_FIGHTER_INDICES
+        )
+
+    def delayed_reward(self, ctx: WorkerContext) -> list[tuple[int, float]]:
+        return [
+            (fired_frame, 1.0)
+            for fired_frame in _agent_missile_hit_frames(ctx, AGENT_FIGHTER_INDICES)
+        ]
 
 
 class CurriculumController:

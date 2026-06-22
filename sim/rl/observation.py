@@ -20,13 +20,15 @@ def build_observation(battlefield: core.BattlefieldContext):
     values = []
     battlefield_diagonal = battlefield.battlefield_diagonal_length
 
+    distance_factor = 1.0 / (battlefield_diagonal * 0.5)
+
     # 自機情報
     fighter = battlefield.fighters[0]
     values.append(fighter.speed * hyperparameters.SPEED_NORMALIZATION_FACTOR)
     values.append(fighter.missile_cooldown > 0)  # TODO: missile_cooldown_rate
 
     boundary_distance = core.compute_distance_from_boundary(battlefield, 0)
-    values.append(boundary_distance.distance / battlefield_diagonal)
+    values.append(boundary_distance.distance * distance_factor)
     values.append(math.cos(boundary_distance.relative_angle))
     values.append(math.sin(boundary_distance.relative_angle))
 
@@ -41,8 +43,8 @@ def build_observation(battlefield: core.BattlefieldContext):
             relative_pose, opponent_index = opponent_futures[i]
             opponent = battlefield.fighters[opponent_index]
             values.append(1.0)  # alive
-            values.append(relative_pose.relative_position.x / battlefield_diagonal)
-            values.append(relative_pose.relative_position.y / battlefield_diagonal)
+            values.append(relative_pose.relative_position.x * distance_factor)
+            values.append(relative_pose.relative_position.y * distance_factor)
             values.append(math.cos(relative_pose.relative_bearing))
             values.append(math.sin(relative_pose.relative_bearing))
             values.append(opponent.speed * hyperparameters.SPEED_NORMALIZATION_FACTOR)
@@ -60,8 +62,8 @@ def build_observation(battlefield: core.BattlefieldContext):
             relative_pose, missile_index = missile_futures[i]
             missile = battlefield.missiles[missile_index]
             values.append(1.0)  # alive
-            values.append(relative_pose.relative_position.x / battlefield_diagonal)
-            values.append(relative_pose.relative_position.y / battlefield_diagonal)
+            values.append(relative_pose.relative_position.x * distance_factor)
+            values.append(relative_pose.relative_position.y * distance_factor)
             values.append(math.cos(relative_pose.relative_bearing))
             values.append(math.sin(relative_pose.relative_bearing))
             values.append(missile.speed * hyperparameters.SPEED_NORMALIZATION_FACTOR)

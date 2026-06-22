@@ -179,7 +179,7 @@ namespace
         return converted;
     }
 
-    toy_acai::DistanceFromBoundary ComputeForwardDistanceFromBoundary(
+    toy_acai::DistanceFromBoundary ComputeDistanceFromBoundary(
         const toy_acai::BattlefieldContext& context,
         int fighterIndex)
     {
@@ -187,7 +187,7 @@ namespace
         {
             throw nb::index_error("fighter_index out of range");
         }
-        return toy_acai::ComputeForwardDistanceFromBoundary(context, fighterIndex);
+        return toy_acai::ComputeDistanceFromBoundary(context, fighterIndex);
     }
 
     struct RendererState
@@ -439,7 +439,7 @@ NB_MODULE(toy_acai_core, m)
     {
         toy_acai::UpdateBattlefield(context, MakeFighterInputs(inputs), deltaTime);
     }, "context"_a, "inputs"_a, "delta_time"_a);
-    m.def("compute_forward_distance_from_boundary", &ComputeForwardDistanceFromBoundary,
+    m.def("compute_distance_from_boundary", &ComputeDistanceFromBoundary,
           "context"_a, "fighter_index"_a);
     m.def("compute_relative_pose", &toy_acai::ComputeRelativePose, "from_pose"_a, "to_pose"_a);
 }

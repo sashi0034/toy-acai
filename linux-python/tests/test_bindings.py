@@ -63,7 +63,7 @@ class ToyAcaiBindingsTest(unittest.TestCase):
             toy_acai_core.update_battlefield(self.context, [toy_acai_core.FighterInput()], 1.0 / 60.0)
 
         with self.assertRaises(IndexError):
-            toy_acai_core.compute_forward_distance_from_boundary(self.context, toy_acai_core.FIGHTER_COUNT)
+            toy_acai_core.compute_distance_from_boundary(self.context, toy_acai_core.FIGHTER_COUNT)
 
     def test_battlefield_utils(self):
         origin = toy_acai_core.Vec2()
@@ -93,7 +93,7 @@ class ToyAcaiBindingsTest(unittest.TestCase):
             ),
         ))
 
-        boundary = toy_acai_core.compute_forward_distance_from_boundary(self.context, 0)
+        boundary = toy_acai_core.compute_distance_from_boundary(self.context, 0)
         self.assertGreater(boundary.distance, 0.0)
 
         from_pose = toy_acai_core.AbsolutePose(self.context.fighters[0])

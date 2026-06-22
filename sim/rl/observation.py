@@ -24,10 +24,10 @@ def build_observation(ctx: SimulationContext):
     values.append(fighter.speed)
     values.append(fighter.missile_cooldown > 0)  # TODO: missile_cooldown_rate
 
-    forward_distance = core.compute_forward_distance_from_boundary(ctx.battlefield, 0)
-    values.append(forward_distance.distance / battlefield_diagonal)
-    values.append(math.cos(forward_distance.relative_angle))
-    values.append(math.sin(forward_distance.relative_angle))
+    boundary_distance = core.compute_distance_from_boundary(ctx.battlefield, 0)
+    values.append(boundary_distance.distance / battlefield_diagonal)
+    values.append(math.cos(boundary_distance.relative_angle))
+    values.append(math.sin(boundary_distance.relative_angle))
 
     # 敵機情報
     opponent_futures = get_alive_fighters_sorted_by_distance(

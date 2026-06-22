@@ -5,13 +5,14 @@ import torch
 
 from .. import constants
 from ..core import core
+from ..simulation_context import WorkerContext, WorkerContextState
 from .input_utils import copy_inputs as _copy_inputs
 from .observation import build_observation, observation_to_tensor
 from .curriculum import Curriculum
 
 
 def try_create_missile_evasion_teacher_data(
-    battlefield_history: deque[core.BattlefieldContext],
+    context_history: deque[WorkerContextState],
     inputs_history: deque[list[core.FighterInput]],
     curriculum: Curriculum,
 ) -> list[tuple[torch.Tensor, torch.Tensor]]:
@@ -19,7 +20,7 @@ def try_create_missile_evasion_teacher_data(
     過去に巻き戻し、直前で回避行動可能ならそれを教師データとする
     """
 
-    past_battlefield = core.BattlefieldContext(battlefield_history[0])
+    past_ctx = WorkerContext.from_state(context_history[0])
 
     # 過去入力が左旋回をやっていたら、右急旋回を試してみる
     override_turn = (
@@ -41,11 +42,11 @@ def try_create_missile_evasion_teacher_data(
 
     # 過去フレームを新入力でシミュレーション
     for inputs in inputs_history:
-        # curriculum.before_step(past_battlefield) # TODO
+        curriculum.before_step(past_ctx)
 
         teacher_data.append(
             (
-                observation_to_tensor(build_observation(past_battlefield)),
+                observation_to_tensor(build_observation(past_ctx.battlefield)),
                 override_action_tensor,
             )
         )
@@ -54,10 +55,10 @@ def try_create_missile_evasion_teacher_data(
         override_inputs[0] = override_action
 
         core.update_battlefield(
-            past_battlefield, override_inputs, constants.SIMULATION_DELTA_TIME
+            past_ctx.battlefield, override_inputs, constants.SIMULATION_DELTA_TIME
         )
 
-        if past_battlefield.fighters[0].health <= 0.0:
+        if past_ctx.battlefield.fighters[0].health <= 0.0:
             # 失敗
             return []
 
@@ -65,7 +66,7 @@ def try_create_missile_evasion_teacher_data(
 
 
 def try_create_boundary_recovery_teacher_data(
-    battlefield_history: deque[core.BattlefieldContext],
+    context_history: deque[WorkerContextState],
     inputs_history: deque[list[core.FighterInput]],
     curriculum: Curriculum,
 ) -> list[tuple[torch.Tensor, torch.Tensor]]:
@@ -73,11 +74,13 @@ def try_create_boundary_recovery_teacher_data(
     過去に戻して境界外に出ているとき、境界内に戻るように入力調整
     """
 
-    past_battlefield = core.BattlefieldContext(battlefield_history[0])
+    past_ctx = WorkerContext.from_state(context_history[0])
 
     teacher_data = []
     for inputs in inputs_history:
-        boundary_distance = core.compute_distance_from_boundary(past_battlefield, 0)
+        curriculum.before_step(past_ctx)
+
+        boundary_distance = core.compute_distance_from_boundary(past_ctx.battlefield, 0)
         relative_angle = boundary_distance.relative_angle
         action = core.FighterInput(
             acceleration=math.cos(
@@ -89,7 +92,7 @@ def try_create_boundary_recovery_teacher_data(
 
         teacher_data.append(
             (
-                observation_to_tensor(build_observation(past_battlefield)),
+                observation_to_tensor(build_observation(past_ctx.battlefield)),
                 torch.tensor([action.acceleration, action.turn, float(action.fire)]),
             )
         )
@@ -98,15 +101,15 @@ def try_create_boundary_recovery_teacher_data(
         override_inputs[0] = action
 
         core.update_battlefield(
-            past_battlefield, override_inputs, constants.SIMULATION_DELTA_TIME
+            past_ctx.battlefield, override_inputs, constants.SIMULATION_DELTA_TIME
         )
 
-        if past_battlefield.fighters[0].health <= 0.0:
+        if past_ctx.battlefield.fighters[0].health <= 0.0:
             # 死亡
             break
 
     return (
         teacher_data
-        if core.compute_distance_from_boundary(past_battlefield, 0).distance >= 0.0
+        if core.compute_distance_from_boundary(past_ctx.battlefield, 0).distance >= 0.0
         else []
     )

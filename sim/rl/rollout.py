@@ -8,7 +8,7 @@ import torch
 
 from .. import constants, hyperparameters
 from ..core import core
-from ..simulation_context import WorkerContext
+from ..simulation_context import WorkerContext, WorkerContextState
 from .curriculum import Curriculum, CurriculumController
 from .observation import OBS_DIM, build_observation, observation_to_tensor
 from .policy_network import PolicyNetwork
@@ -78,13 +78,16 @@ def collect_episode(
     rewards = []
     total_reward = 0.0
 
-    battlefield_history: deque[core.BattlefieldContext] = deque(maxlen=30)
+    context_history: deque[WorkerContextState] = deque(maxlen=30)
     inputs_history: deque[list[core.FighterInput]] = deque(maxlen=30)
 
     # シミュレーションループ
     with torch.no_grad():
         step = 0
         for step in range(1, max_step_count + 1):
+            # 更新直前の状態を直近フレーム分だけ保持する
+            context_history.append(ctx.save_state())
+
             curriculum.before_step(ctx)
 
             # ニューラルネットワークに入力する観測を構築し、アクションをサンプリングする
@@ -104,15 +107,16 @@ def collect_episode(
             for fighter_index, enemy_input in curriculum.opponent_inputs(ctx).items():
                 inputs[fighter_index] = enemy_input
 
-            # 更新直前の状態と入力を直近フレーム分だけ保持する
-            battlefield_history.append(core.BattlefieldContext(battlefield))
+            # 更新直前の入力を直近フレーム分だけ保持する
             inputs_history.append(copy_inputs(inputs))
 
             core.update_battlefield(
                 battlefield, inputs, constants.SIMULATION_DELTA_TIME
             )
 
-            reward = curriculum.step_reward(ctx, battlefield_history[-1], inputs)
+            reward = curriculum.step_reward(
+                ctx, context_history[-1].battlefield, inputs
+            )
 
             observations.append(obs_tensor.cpu())
             raw_actions.append(raw_action.cpu())
@@ -154,11 +158,11 @@ def collect_episode(
     )
     teacher_data = (
         try_create_missile_evasion_teacher_data(
-            battlefield_history, inputs_history, curriculum
+            context_history, inputs_history, curriculum
         )
         if killed_by_missile
         else try_create_boundary_recovery_teacher_data(
-            battlefield_history, inputs_history, curriculum
+            context_history, inputs_history, curriculum
         )
     )
 

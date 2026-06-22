@@ -25,6 +25,13 @@ class SimulationMetadata:
         return output_directory
 
 
+@dataclass
+class WorkerContextState:
+    worker_id: int
+    battlefield: core.BattlefieldContext
+    rng_state: object
+
+
 class WorkerContext:
     """State owned by one rollout and never shared between processes."""
 
@@ -32,6 +39,23 @@ class WorkerContext:
         self.worker_id = worker_id
         self.battlefield = core.BattlefieldContext()
         self.rng = random.Random(seed)
+
+    def save_state(self) -> WorkerContextState:
+        return WorkerContextState(
+            worker_id=self.worker_id,
+            battlefield=core.BattlefieldContext(self.battlefield),
+            rng_state=self.rng.getstate(),
+        )
+
+    def restore_state(self, state: WorkerContextState):
+        self.battlefield = core.BattlefieldContext(state.battlefield)
+        self.rng.setstate(state.rng_state)
+
+    @classmethod
+    def from_state(cls, state: WorkerContextState) -> "WorkerContext":
+        ctx = cls(state.worker_id, seed=0)
+        ctx.restore_state(state)
+        return ctx
 
 
 def _parse_positive_int(value: str | None, name: str) -> int:

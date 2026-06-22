@@ -26,7 +26,7 @@ namespace toy_acai
     struct RelativePose
     {
         Vec2 relativePosition;
-        double relativeYaw;
+        double relativeBearing;
     };
 
     RelativePose ComputeRelativePose(const AbsolutePose& fromPose, const AbsolutePose& toPose);

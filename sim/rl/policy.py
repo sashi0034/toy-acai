@@ -4,7 +4,9 @@ import torch.nn.functional as F
 from torch.distributions import Normal, Bernoulli
 
 
-class Policy(nn.Module):
+class PolicyNetwork(nn.Module):
+    """Actor: 行動分布を出力する"""
+
     def __init__(self, obs_dim: int, hidden_dim: int):
         super().__init__()
 

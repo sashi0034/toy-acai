@@ -5,12 +5,16 @@ from PIL import Image, ImageDraw, ImageFont
 from .observation import ENTITY_FEATURES, MISSILE_FEATURES, SELF_FEATURES
 
 
-def render_reward(frame: Image.Image, total_reward: float) -> Image.Image:
+def render_reward(
+    frame: Image.Image, total_reward: float, critic_value: float | None = None
+) -> Image.Image:
     image = frame.convert("RGBA")
     overlay = Image.new("RGBA", image.size, (0, 0, 0, 0))
     draw = ImageDraw.Draw(overlay)
     font = ImageFont.load_default()
     text = f"reward={total_reward:+.3f}"
+    if critic_value is not None:
+        text += f"  critic={critic_value:+.3f}"
     text_box = draw.textbbox((0, 0), text, font=font)
     padding = 6
     margin = 8

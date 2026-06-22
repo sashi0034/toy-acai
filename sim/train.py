@@ -9,8 +9,9 @@ import torch
 from .rl.curriculum import Curriculum, initial_curriculum
 from .rl.render_utils import render_observation, render_reward, save_rendered_frames
 from .rl.observation import OBS_DIM, build_observation
-from .rl.policy import Policy
+from .rl.policy import PolicyNetwork
 from .rl.returns import compute_returns, normalize_returns
+from .rl.value import ValueNetwork
 
 from .core import core
 from .simulation_context import SimulationContext
@@ -80,14 +81,17 @@ def _try_create_teacher_data(
 
 def run_episode(
     ctx: SimulationContext,
-    policy: Policy,
+    policy: PolicyNetwork,
+    value_network: ValueNetwork,
     curriculum: Curriculum,
     rng: random.Random,
     render_path: Path | None = None,
 ):
     battlefield = ctx.battlefield
     device = next(policy.parameters()).device
+
     policy.train()
+    value_network.train()
 
     render = render_path is not None
     if render:
@@ -106,6 +110,7 @@ def run_episode(
     )
 
     log_probs = []
+    values = []
     rewards = []
     total_reward = 0.0
 
@@ -121,6 +126,8 @@ def run_episode(
         obs_tensor = build_observation(ctx.battlefield).to(device)
         action_tensor, log_prob = policy.sample_action(obs_tensor)
         acceleration, turn, fire = action_tensor.detach().cpu().tolist()
+
+        value = value_network(obs_tensor)
 
         # 入力
         inputs = [core.FighterInput() for _ in range(core.FIGHTER_COUNT)]
@@ -140,6 +147,7 @@ def run_episode(
         rewards.append(reward)
         total_reward += reward
         log_probs.append(log_prob)
+        values.append(value)
 
         if render:
             renderer.update(battlefield, constants.SIMULATION_DELTA_TIME)
@@ -148,18 +156,29 @@ def run_episode(
                 renderer.render(battlefield)
 
                 frame = Image.fromarray(renderer.image_buffer(), mode="RGBA").copy()
-                frame = render_reward(frame, total_reward)
+
+                # FIXME: 前フレームの情報が描画されている
+                frame = render_reward(frame, total_reward, value)
                 frame = render_observation(frame, obs_tensor)
+
                 frames.append(frame)
 
         if curriculum.is_terminal(ctx):
             break
 
-    # 報酬の割引和を計算し、正規化する
+    # 報酬計算
     returns = compute_returns(rewards, hyperparameters.REWARD_DISCOUNT)
-    returns = normalize_returns(returns).to(device)
+    returns = returns.to(device)
 
-    loss = -(torch.stack(log_probs) * returns).mean()
+    values_tensor = torch.stack(values)
+
+    # Monte Carlo Advantage
+    # FIXME: 分散が大きいので GAE にしたい
+    advantages = normalize_returns(returns - values_tensor.detach())
+
+    # Actor-Critic の損失
+    actor_loss = -(torch.stack(log_probs) * advantages).mean()
+    critic_loss = torch.nn.functional.mse_loss(values_tensor, returns)
 
     if render:
         assert render_path is not None
@@ -175,7 +194,7 @@ def run_episode(
         else []
     )
 
-    return sum(rewards), loss, step, teacher_data
+    return sum(rewards), actor_loss, critic_loss, step, teacher_data
 
 
 def run():
@@ -189,15 +208,26 @@ def run():
     # PyTorch 準備
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    obs_dim = OBS_DIM
-    policy = Policy(obs_dim, hidden_dim=hyperparameters.HIDDEN_DIM).to(device)
-    optimizer = torch.optim.Adam(policy.parameters(), lr=hyperparameters.LEARNING_RATE)
+    policy_network = PolicyNetwork(OBS_DIM, hidden_dim=hyperparameters.HIDDEN_DIM).to(
+        device
+    )
+    policy_optimizer = torch.optim.Adam(
+        policy_network.parameters(), lr=hyperparameters.LEARNING_RATE
+    )
+
+    value_network = ValueNetwork(OBS_DIM, hidden_dim=hyperparameters.HIDDEN_DIM).to(
+        device
+    )
+    value_optimizer = torch.optim.Adam(
+        value_network.parameters(), lr=hyperparameters.LEARNING_RATE
+    )
 
     curriculum = initial_curriculum(ctx)
 
     for update in range(hyperparameters.NUM_UPDATES):
         batch_rewards = []
-        batch_losses = []
+        batch_actor_losses = []
+        batch_critic_losses = []
         batch_steps = []
         teacher_data = []
 
@@ -216,9 +246,16 @@ def run():
             )
 
             # 単一エピソードを実行して報酬と損失を計算する
-            total_reward, loss, steps, episode_teacher_data = run_episode(
+            (
+                total_reward,
+                actor_loss,
+                critic_loss,
+                steps,
+                episode_teacher_data,
+            ) = run_episode(
                 ctx,
-                policy,
+                policy_network,
+                value_network,
                 curriculum,
                 rng,
                 render_path,
@@ -233,12 +270,13 @@ def run():
                 )
 
             batch_rewards.append(total_reward)
-            batch_losses.append(loss)
+            batch_actor_losses.append(actor_loss)
+            batch_critic_losses.append(critic_loss)
             batch_steps.append(steps)
             teacher_data.extend(episode_teacher_data)
 
-        # 平均損失を計算し、勾配を更新する
-        loss = torch.stack(batch_losses).mean()  # loss = - (1/N) * Σ(log π(a|s) * R)
+        actor_loss = torch.stack(batch_actor_losses).mean()
+        critic_loss = torch.stack(batch_critic_losses).mean()
 
         # 教師データがある場合は、教師あり学習で追加の勾配更新を行う
         teacher_loss = None
@@ -249,18 +287,30 @@ def run():
             teacher_actions = torch.stack([action for _, action in teacher_data]).to(
                 device
             )
-            teacher_loss = policy.supervised_loss(teacher_observations, teacher_actions)
-            loss += teacher_loss
+            teacher_loss = policy_network.supervised_loss(
+                teacher_observations, teacher_actions
+            )
 
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
+        # 方策更新
+        policy_optimizer.zero_grad()
+        policy_loss = actor_loss
+        if teacher_loss is not None:
+            policy_loss += teacher_loss
+        policy_loss.backward()
+        policy_optimizer.step()
+
+        # 価値関数更新
+        value_optimizer.zero_grad()
+        value_loss = critic_loss
+        value_loss.backward()
+        value_optimizer.step()
 
         print(
             f"update={update + 1} episodes={hyperparameters.EPISODES_PER_UPDATE} "
             f"curriculum={curriculum.name} "
             f"reward={sum(batch_rewards) / len(batch_rewards):.2f} "
-            f"loss={loss.item():.4f} "
+            f"actor_loss={actor_loss.item():.4f} "
+            f"critic_loss={critic_loss.item():.4f} "
             f"teacher_loss={teacher_loss.item() if teacher_loss is not None else 0.0:.4f} "
             f"teacher_samples={len(teacher_data)} "
             f"steps={sum(batch_steps) / len(batch_steps):.1f} "

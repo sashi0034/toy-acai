@@ -18,7 +18,7 @@ PROMOTION_SUCCESS_RATE = 0.8
 
 # 初期カリキュラム
 def initial_curriculum(ctx: SimulationContext) -> "Curriculum":
-    return MissileSurvivalCurriculum(ctx)
+    return MoveCurriculum(ctx)
 
 
 def _is_inside_battlefield(ctx: SimulationContext, position: core.Vec2) -> bool:
@@ -230,7 +230,7 @@ class MissileSurvivalCurriculum(Curriculum):
         self.step_count = 0
 
     def before_step(self, ctx: SimulationContext, rng: random.Random):
-        self.step_count += 1
+        self.step_count += 1  # TODO: battlefield の frameCount を使うようにする
 
         missile_spawn_interval_steps = round(1.5 / constants.SIMULATION_DELTA_TIME)
         if self.step_count % missile_spawn_interval_steps == 0:
@@ -288,10 +288,10 @@ class MissileSurvivalCurriculum(Curriculum):
                 else 0.0
             )
 
-        forward_distance_from_boundary = core.compute_distance_from_boundary(
+        boundary_distance = core.compute_distance_from_boundary(
             ctx.battlefield, AGENT_FIGHTER_INDICES
         )
-        if forward_distance_from_boundary.distance > 0.0:
+        if boundary_distance.distance > 0.0:
             return (
                 inputs[AGENT_FIGHTER_INDICES].acceleration
                 * constants.SIMULATION_DELTA_TIME
@@ -300,7 +300,7 @@ class MissileSurvivalCurriculum(Curriculum):
             # 境界法線方向なら最悪ペナルティ、逆向きになるにつれて緩和するイメージ
             return (
                 -1.0
-                * (1.0 + math.cos(forward_distance_from_boundary.relative_angle))
+                * (1.0 + math.cos(boundary_distance.relative_angle))
                 * constants.SIMULATION_DELTA_TIME
             )
 

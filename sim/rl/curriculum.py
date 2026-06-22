@@ -187,17 +187,26 @@ class MoveCurriculum(Curriculum):
         agent = ctx.battlefield.fighters[AGENT_FIGHTER_INDICES]
         if agent.health <= 0.0:
             return (
-                -1.0
+                -5.0
                 if previous_battlefield.fighters[AGENT_FIGHTER_INDICES].health > 0.0
                 else 0.0
             )
-        if _is_inside_battlefield(ctx, agent.position):
+
+        boundary_distance = core.compute_distance_from_boundary(
+            ctx.battlefield, AGENT_FIGHTER_INDICES
+        )
+        if boundary_distance.distance > 0.0:
             return (
                 inputs[AGENT_FIGHTER_INDICES].acceleration
                 * constants.SIMULATION_DELTA_TIME
             )
         else:
-            return -1.0 * constants.SIMULATION_DELTA_TIME
+            # 境界法線方向なら最悪ペナルティ、逆向きになるにつれて緩和するイメージ
+            return (
+                -1.0
+                * (1.0 + math.cos(boundary_distance.relative_angle))
+                * constants.SIMULATION_DELTA_TIME
+            )
 
     def record_episode(self):
         self.progress.record_episode(_is_agent_winner(self.ctx, opponent_count=0))
@@ -354,6 +363,8 @@ class RandomOpponentCurriculum(Curriculum):
         inputs: list[core.FighterInput],
     ) -> float:
         agent = ctx.battlefield.fighters[AGENT_FIGHTER_INDICES]
+
+        # TODO: 撃墜報酬を発射時点に遡って与える
 
         # 場外ペナルティ
         reward = 0

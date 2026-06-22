@@ -48,11 +48,6 @@ class PolicyNetwork(nn.Module):
         normal = Normal(mean, std)
         raw_action = normal.sample()  # shape: (batch_size, 2)
 
-        # 各行動成分ごとに、その値が正規分布 N(mean, std) から出る log 確率密度を計算する
-        # 2次元行動の log 確率を足し合わせて、各サンプルごとの log π(a|s) にする
-        # つまり log π(a|s) = log N(a_1|mean_1, std_1) + log N(a_2|mean_2, std_2)
-        log_prob = normal.log_prob(raw_action).sum(dim=-1)  # shape: (batch_size,)
-
         # [:, N] は [全部, N番目のアクション] という意味
         accel = torch.tanh(raw_action[:, 0])  # [-1.0, 1.0], shape: (batch_size,)
         turn = torch.tanh(raw_action[:, 1])  # [-1.0, 1.0], shape: (batch_size,)
@@ -61,15 +56,33 @@ class PolicyNetwork(nn.Module):
         fire_dist = Bernoulli(logits=fire_logit)  # shape: (batch_size,)
         fire = fire_dist.sample()  # {0, 1}, shape: (batch_size,)
 
-        log_prob = log_prob + fire_dist.log_prob(fire)  # shape: (batch_size,)
-
         action = torch.stack([accel, turn, fire], dim=-1)  # shape: (batch_size, 3)
 
         if single_case:
-            log_prob = log_prob.squeeze(0)
             action = action.squeeze(0)
+            raw_action = raw_action.squeeze(0)
 
-        return action, log_prob
+        return action, raw_action
+
+    def log_prob_from_raw_action(
+        self,
+        observations: torch.Tensor,
+        raw_actions: torch.Tensor,
+        fires: torch.Tensor,
+    ) -> torch.Tensor:
+        """アクションに対するサンプリング時の log 確率を計算する。"""
+        mean, std, fire_logit = self.forward(observations)
+        normal = Normal(mean, std)
+        fire_dist = Bernoulli(logits=fire_logit)
+
+        # 各行動成分ごとに、その値が正規分布 N(mean, std) から出る log 確率密度を計算する
+        # 2次元行動の log 確率を足し合わせて、各サンプルごとの log π(a|s) にする
+        # つまり log π(a|s) = log N(a_1|mean_1, std_1) + log N(a_2|mean_2, std_2)
+        log_prob = normal.log_prob(raw_actions).sum(dim=-1)  # shape: (batch_size,)
+
+        log_prob = log_prob + fire_dist.log_prob(fires)  # shape: (batch_size,)
+
+        return log_prob
 
     def supervised_loss(self, observations: torch.Tensor, actions: torch.Tensor):
         mean, _, fire_logit = self.forward(observations)

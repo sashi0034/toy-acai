@@ -1,11 +1,11 @@
 import math
-import random
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from enum import Enum
 
 from .. import constants
 from ..core import core
-from ..simulation_context import SimulationContext
+from ..simulation_context import WorkerContext
 from .rule_based_ai import RuleBasedAI
 
 
@@ -16,17 +16,12 @@ MOVE_CURRICULUM_UPDATES = 10
 PROMOTION_SUCCESS_RATE = 0.8
 
 
-# 初期カリキュラム
-def initial_curriculum(ctx: SimulationContext) -> "Curriculum":
-    return MoveCurriculum(ctx)
-
-
-def _is_inside_battlefield(ctx: SimulationContext, position: core.Vec2) -> bool:
+def _is_inside_battlefield(ctx: WorkerContext, position: core.Vec2) -> bool:
     area = ctx.battlefield.battlefield_area
     return 0.0 <= position.x <= area.w and 0.0 <= position.y <= area.h
 
 
-def _setup_fighters(ctx: SimulationContext, rng: random.Random, opponent_count: int):
+def _setup_fighters(ctx: WorkerContext, opponent_count: int):
     core.init_battlefield(ctx.battlefield)
 
     for fighter in ctx.battlefield.fighters:
@@ -47,8 +42,8 @@ def _setup_fighters(ctx: SimulationContext, rng: random.Random, opponent_count: 
         position = core.Vec2(0.0, 0.0)
         for _ in range(1000):
             position = core.Vec2(
-                margin + (area.x - 2 * margin) * rng.random(),
-                margin + (area.y - 2 * margin) * rng.random(),
+                margin + (area.x - 2 * margin) * ctx.rng.random(),
+                margin + (area.y - 2 * margin) * ctx.rng.random(),
             )
             minimum_distance = (
                 0.0
@@ -62,11 +57,11 @@ def _setup_fighters(ctx: SimulationContext, rng: random.Random, opponent_count: 
                 break
 
         fighter.position = position
-        fighter.yaw = 2 * math.pi * rng.random()
+        fighter.yaw = 2 * math.pi * ctx.rng.random()
         occupied_positions.append(position)
 
 
-def _is_combat_terminal(ctx: SimulationContext, opponent_count: int) -> bool:
+def _is_combat_terminal(ctx: WorkerContext, opponent_count: int) -> bool:
     agent = ctx.battlefield.fighters[AGENT_FIGHTER_INDICES]
     red_alive = any(
         fighter.health > 0.0 and fighter.team_id == 1
@@ -76,7 +71,7 @@ def _is_combat_terminal(ctx: SimulationContext, opponent_count: int) -> bool:
 
 
 def _kill_death_reward(
-    ctx: SimulationContext, previous_battlefield: core.BattlefieldContext
+    ctx: WorkerContext, previous_battlefield: core.BattlefieldContext
 ) -> float:
     reward = sum(
         1.0
@@ -91,7 +86,7 @@ def _kill_death_reward(
     return reward
 
 
-def _is_agent_winner(ctx: SimulationContext, opponent_count: int) -> bool:
+def _is_agent_winner(ctx: WorkerContext, opponent_count: int) -> bool:
     agent = ctx.battlefield.fighters[AGENT_FIGHTER_INDICES]
     if agent.health <= 0.0:
         return False
@@ -128,59 +123,50 @@ class Curriculum(ABC):
     name: str
 
     @abstractmethod
-    def setup_battlefield(self, ctx: SimulationContext, rng: random.Random): ...
+    def setup_battlefield(self, ctx: WorkerContext): ...
 
     @abstractmethod
-    def before_step(self, ctx: SimulationContext, rng: random.Random): ...
+    def before_step(self, ctx: WorkerContext): ...
 
     @abstractmethod
-    def opponent_inputs(
-        self, ctx: SimulationContext, rng: random.Random
-    ) -> dict[int, core.FighterInput]: ...
+    def opponent_inputs(self, ctx: WorkerContext) -> dict[int, core.FighterInput]: ...
 
     @abstractmethod
-    def is_terminal(self, ctx: SimulationContext) -> bool: ...
+    def is_terminal(self, ctx: WorkerContext) -> bool: ...
 
     @abstractmethod
     def step_reward(
         self,
-        ctx: SimulationContext,
+        ctx: WorkerContext,
         previous_battlefield: core.BattlefieldContext,
         inputs: list[core.FighterInput],
     ) -> float: ...
 
     @abstractmethod
-    def record_episode(self): ...
-
-    @abstractmethod
-    def after_update(self, ctx: SimulationContext) -> "Curriculum | None": ...
+    def is_success(self, ctx: WorkerContext) -> bool: ...
 
 
 class MoveCurriculum(Curriculum):
     name = "move"
 
-    def __init__(self, ctx: SimulationContext):
-        self.ctx = ctx
-        self.progress = CurriculumProgress()
+    def setup_battlefield(self, ctx: WorkerContext):
+        _setup_fighters(ctx, opponent_count=0)
 
-    def setup_battlefield(self, ctx: SimulationContext, rng: random.Random):
-        self.ctx = ctx
-        _setup_fighters(ctx, rng, opponent_count=0)
-
-    def before_step(self, ctx: SimulationContext, rng: random.Random):
+    def before_step(self, ctx: WorkerContext):
         pass
 
-    def opponent_inputs(
-        self, ctx: SimulationContext, rng: random.Random
-    ) -> dict[int, core.FighterInput]:
+    def opponent_inputs(self, ctx: WorkerContext) -> dict[int, core.FighterInput]:
         return {}
 
-    def is_terminal(self, ctx: SimulationContext) -> bool:
+    def is_terminal(self, ctx: WorkerContext) -> bool:
         return _is_combat_terminal(ctx, opponent_count=0)
+
+    def is_success(self, ctx: WorkerContext) -> bool:
+        return _is_agent_winner(ctx, opponent_count=0)
 
     def step_reward(
         self,
-        ctx: SimulationContext,
+        ctx: WorkerContext,
         previous_battlefield: core.BattlefieldContext,
         inputs: list[core.FighterInput],
     ) -> float:
@@ -208,49 +194,29 @@ class MoveCurriculum(Curriculum):
                 * constants.SIMULATION_DELTA_TIME
             )
 
-    def record_episode(self):
-        self.progress.record_episode(_is_agent_winner(self.ctx, opponent_count=0))
-
-    def after_update(self, ctx: SimulationContext) -> "Curriculum | None":
-        self.progress.complete_update()
-
-        # if self.progress.update_count >= MOVE_CURRICULUM_UPDATES:
-        #     return MissileSurvivalCurriculum(ctx)
-
-        if (
-            self.progress.update_count >= MOVE_CURRICULUM_UPDATES
-            and self.progress.success_rate >= PROMOTION_SUCCESS_RATE
-        ):
-            return MissileSurvivalCurriculum(ctx)
-        return None
-
 
 class MissileSurvivalCurriculum(Curriculum):
     name = "missile_survival"
 
-    def __init__(self, ctx: SimulationContext):
-        self.ctx = ctx
-        self.progress = CurriculumProgress()
+    def __init__(self):
         self.step_count = 0
 
-    def setup_battlefield(self, ctx: SimulationContext, rng: random.Random):
-        self.ctx = ctx
-        _setup_fighters(ctx, rng, opponent_count=0)
+    def setup_battlefield(self, ctx: WorkerContext):
+        _setup_fighters(ctx, opponent_count=0)
         self.step_count = 0
 
-    def before_step(self, ctx: SimulationContext, rng: random.Random):
+    def before_step(self, ctx: WorkerContext):
         self.step_count += 1  # TODO: battlefield の frameCount を使うようにする
 
         missile_spawn_interval_steps = round(1.5 / constants.SIMULATION_DELTA_TIME)
         if self.step_count % missile_spawn_interval_steps == 0:
             # ミサイル発射
-            self._fire_missile_around_player(ctx, rng)
-            return
+            self._fire_missile_around_player(ctx)
 
-    def _fire_missile_around_player(self, ctx, rng):
+    def _fire_missile_around_player(self, ctx: WorkerContext):
         agent = ctx.battlefield.fighters[AGENT_FIGHTER_INDICES]
 
-        angle = 2.0 * math.pi * rng.random()
+        angle = 2.0 * math.pi * ctx.rng.random()
         distance = 400.0
         position = core.Vec2(
             agent.position.x + math.cos(angle) * distance,
@@ -258,34 +224,30 @@ class MissileSurvivalCurriculum(Curriculum):
         )
 
         missile = core.MissileState()
-
         missile.id = ctx.battlefield.next_missile_id
         ctx.battlefield.next_missile_id += 1
-
         missile.team_id = 1
         missile.shooter_fighter_index = -1
         missile.target_fighter_index = AGENT_FIGHTER_INDICES
-
         missile.position = position
         missile.yaw = math.atan2(
             agent.position.y - position.y, agent.position.x - position.x
         )
-
         missile.speed = 50.0
-
         ctx.battlefield.missiles.append(missile)
 
-    def opponent_inputs(
-        self, ctx: SimulationContext, rng: random.Random
-    ) -> dict[int, core.FighterInput]:
+    def opponent_inputs(self, ctx: WorkerContext) -> dict[int, core.FighterInput]:
         return {}
 
-    def is_terminal(self, ctx: SimulationContext) -> bool:
+    def is_terminal(self, ctx: WorkerContext) -> bool:
         return _is_combat_terminal(ctx, opponent_count=0)
+
+    def is_success(self, ctx: WorkerContext) -> bool:
+        return _is_agent_winner(ctx, opponent_count=0)
 
     def step_reward(
         self,
-        ctx: SimulationContext,
+        ctx: WorkerContext,
         previous_battlefield: core.BattlefieldContext,
         inputs: list[core.FighterInput],
     ) -> float:
@@ -311,52 +273,37 @@ class MissileSurvivalCurriculum(Curriculum):
                 * constants.SIMULATION_DELTA_TIME
             )
 
-    def record_episode(self):
-        self.progress.record_episode(_is_agent_winner(self.ctx, opponent_count=0))
-
-    def after_update(self, ctx: SimulationContext) -> "Curriculum | None":
-        self.progress.complete_update()
-
-        # ミサイル全回避まで続ける
-        if self.progress.success_rate >= 1.0:
-            return RandomOpponentCurriculum(ctx)
-        return None
-
 
 class RandomOpponentCurriculum(Curriculum):
     name = "random_opponents_4"
+    opponent_count = 4
 
-    def __init__(self, ctx: SimulationContext):
-        self.ctx = ctx
-        self.opponent_count = 4
-        self.progress = CurriculumProgress()
+    def setup_battlefield(self, ctx: WorkerContext):
+        _setup_fighters(ctx, opponent_count=self.opponent_count)
 
-    def setup_battlefield(self, ctx: SimulationContext, rng: random.Random):
-        self.ctx = ctx
-        _setup_fighters(ctx, rng, opponent_count=self.opponent_count)
-
-    def before_step(self, ctx: SimulationContext, rng: random.Random):
+    def before_step(self, ctx: WorkerContext):
         pass
 
-    def opponent_inputs(
-        self, ctx: SimulationContext, rng: random.Random
-    ) -> dict[int, core.FighterInput]:
+    def opponent_inputs(self, ctx: WorkerContext) -> dict[int, core.FighterInput]:
         return {
             fighter_index: core.FighterInput(
                 -1.0,
                 -1.0 if fighter_index % 2 == 0 else 1.0,
-                rng.random() < 0.15,
+                ctx.rng.random() < 0.15,
             )
             for fighter_index in OPPONENT_FIGHTER_INDICES
             if ctx.battlefield.fighters[fighter_index].health > 0.0
         }
 
-    def is_terminal(self, ctx: SimulationContext) -> bool:
+    def is_terminal(self, ctx: WorkerContext) -> bool:
         return _is_combat_terminal(ctx, opponent_count=self.opponent_count)
+
+    def is_success(self, ctx: WorkerContext) -> bool:
+        return _is_agent_winner(ctx, opponent_count=self.opponent_count)
 
     def step_reward(
         self,
-        ctx: SimulationContext,
+        ctx: WorkerContext,
         previous_battlefield: core.BattlefieldContext,
         inputs: list[core.FighterInput],
     ) -> float:
@@ -403,59 +350,111 @@ class RandomOpponentCurriculum(Curriculum):
 
         return reward
 
-    def record_episode(self):
-        self.progress.record_episode(
-            _is_agent_winner(self.ctx, opponent_count=self.opponent_count)
-        )
-
-    def after_update(self, ctx: SimulationContext) -> "Curriculum | None":
-        self.progress.complete_update()
-        if self.progress.success_rate >= PROMOTION_SUCCESS_RATE:
-            return RuleBasedOpponentCurriculum(ctx, opponent_count=1)
-        return None
-
 
 class RuleBasedOpponentCurriculum(Curriculum):
-    def __init__(self, ctx: SimulationContext, opponent_count: int):
-        self.ctx = ctx
+    def __init__(self, opponent_count: int):
         self.opponent_count = opponent_count
-        self.progress = CurriculumProgress()
         self.name = f"rule_based_opponents_{opponent_count}"
         self.opponent_ai = RuleBasedAI(team_id=1)
 
-    def setup_battlefield(self, ctx: SimulationContext, rng: random.Random):
-        self.ctx = ctx
-        _setup_fighters(ctx, rng, opponent_count=self.opponent_count)
+    def setup_battlefield(self, ctx: WorkerContext):
+        _setup_fighters(ctx, opponent_count=self.opponent_count)
         self.opponent_ai.reset()
 
-    def before_step(self, ctx: SimulationContext, rng: random.Random):
+    def before_step(self, ctx: WorkerContext):
         pass
 
-    def opponent_inputs(
-        self, ctx: SimulationContext, rng: random.Random
-    ) -> dict[int, core.FighterInput]:
+    def opponent_inputs(self, ctx: WorkerContext) -> dict[int, core.FighterInput]:
         return self.opponent_ai.inputs(ctx)
 
-    def is_terminal(self, ctx: SimulationContext) -> bool:
+    def is_terminal(self, ctx: WorkerContext) -> bool:
         return _is_combat_terminal(ctx, opponent_count=self.opponent_count)
+
+    def is_success(self, ctx: WorkerContext) -> bool:
+        return _is_agent_winner(ctx, opponent_count=self.opponent_count)
 
     def step_reward(
         self,
-        ctx: SimulationContext,
+        ctx: WorkerContext,
         previous_battlefield: core.BattlefieldContext,
         inputs: list[core.FighterInput],
     ) -> float:
         return _kill_death_reward(ctx, previous_battlefield)
 
-    def record_episode(self):
-        self.progress.record_episode(
-            _is_agent_winner(self.ctx, opponent_count=self.opponent_count)
-        )
 
-    def after_update(self, ctx: SimulationContext) -> "Curriculum | None":
+class CurriculumKind(str, Enum):
+    MOVE = "move"
+    MISSILE_SURVIVAL = "missile_survival"
+    RANDOM_OPPONENTS = "random_opponents"
+    RULE_BASED_OPPONENTS = "rule_based_opponents"
+
+
+class CurriculumController:
+    """親プロセスでカリキュラムの段階と進捗だけを管理する。"""
+
+    def __init__(self):
+        self.kind = CurriculumKind.MOVE
+        self.opponent_count = 0
+        self.progress = CurriculumProgress()
+
+    # TODO: 分岐を簡単化したい
+
+    @property
+    def name(self) -> str:
+        if self.kind == CurriculumKind.RANDOM_OPPONENTS:
+            return RandomOpponentCurriculum.name
+        if self.kind == CurriculumKind.RULE_BASED_OPPONENTS:
+            return f"rule_based_opponents_{self.opponent_count}"
+        return self.kind.value
+
+    def create_episode(self) -> Curriculum:
+        if self.kind == CurriculumKind.MOVE:
+            return MoveCurriculum()
+        if self.kind == CurriculumKind.MISSILE_SURVIVAL:
+            return MissileSurvivalCurriculum()
+        if self.kind == CurriculumKind.RANDOM_OPPONENTS:
+            return RandomOpponentCurriculum()
+        if self.kind == CurriculumKind.RULE_BASED_OPPONENTS:
+            return RuleBasedOpponentCurriculum(self.opponent_count)
+        raise ValueError(f"Unknown curriculum kind: {self.kind}")
+
+    def record_episode(self, is_success: bool):
+        self.progress.record_episode(is_success)
+
+    def after_update(self) -> tuple[str, str] | None:
         self.progress.complete_update()
-        if self.progress.success_rate < PROMOTION_SUCCESS_RATE:
+        next_kind = None
+        next_opponent_count = 0
+
+        if self.kind == CurriculumKind.MOVE:
+            if (
+                self.progress.update_count >= MOVE_CURRICULUM_UPDATES
+                and self.progress.success_rate >= PROMOTION_SUCCESS_RATE
+            ):
+                next_kind = CurriculumKind.MISSILE_SURVIVAL
+        elif self.kind == CurriculumKind.MISSILE_SURVIVAL:
+            # ミサイル全回避まで続ける
+            if self.progress.success_rate >= 1.0:
+                next_kind = CurriculumKind.RANDOM_OPPONENTS
+        elif self.kind == CurriculumKind.RANDOM_OPPONENTS:
+            if self.progress.success_rate >= PROMOTION_SUCCESS_RATE:
+                next_kind = CurriculumKind.RULE_BASED_OPPONENTS
+                next_opponent_count = 1
+        elif self.kind == CurriculumKind.RULE_BASED_OPPONENTS:
+            if (
+                self.progress.success_rate >= PROMOTION_SUCCESS_RATE
+                and self.opponent_count < 3
+            ):
+                next_kind = CurriculumKind.RULE_BASED_OPPONENTS
+                next_opponent_count = self.opponent_count + 1
+        else:
+            raise ValueError(f"Unknown curriculum kind: {self.kind}")
+
+        if next_kind is None:
             return None
-        if self.opponent_count >= 3:
-            return None
-        return RuleBasedOpponentCurriculum(ctx, opponent_count=self.opponent_count + 1)
+
+        previous_name = self.name
+        self.kind = next_kind
+        self.opponent_count = next_opponent_count
+        self.progress = CurriculumProgress()
+        return previous_name, self.name

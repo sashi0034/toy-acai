@@ -33,10 +33,11 @@ def _render_episode(
     value_network: ValueNetwork,
     curriculum_controller: CurriculumController,
     update: int,
-) -> Path:
+) -> tuple[Path, Rollout]:
     episode_in_update = update % hyperparameters.EPISODES_PER_UPDATE
 
-    seed = _episode_seed(update, episode_in_update)  # FIXME?
+    # シード値を意図的に巡回させる
+    seed = _episode_seed(hyperparameters.NUM_UPDATES, episode_in_update)
     torch.manual_seed(seed)
 
     render_path = (
@@ -47,7 +48,7 @@ def _render_episode(
     ctx.renderer = core.BattlefieldRenderer()
     worker_ctx = WorkerContext(worker_id=-1, seed=seed)
     curriculum = curriculum_controller.create_episode()
-    collect_episode(
+    rollout = collect_episode(
         worker_ctx,
         policy,
         value_network,
@@ -55,7 +56,7 @@ def _render_episode(
         renderer=ctx.renderer,
         render_path=render_path,
     )
-    return render_path
+    return render_path, rollout
 
 
 def _losses_from_rollout(
@@ -130,14 +131,14 @@ def run():
                 for episode_in_update in range(hyperparameters.EPISODES_PER_UPDATE)
             ]
 
-            # ワーカープロセスとは非同期に親プロセスで描画を実行
-            # TODO: このプロセスの結果も活用できるはず
-            render_path_result = _render_episode(
+            # ワーカープロセスとは非同期に親プロセスでも実行 (描画あり)
+            render_path_result, render_rollout = _render_episode(
                 ctx, policy_network, value_network, curriculum_controller, update
             )
 
             # ワーカーの結果を待機して収集する
             rollouts = [future.result() for future in futures]
+            rollouts.append(render_rollout)  # 描画されたエピソードも含める
 
             policy_network.train()
             value_network.train()
@@ -194,7 +195,7 @@ def run():
 
             message = (
                 f"curriculum={curriculum_controller.name} "
-                f"update={update + 1} episodes={hyperparameters.EPISODES_PER_UPDATE} "
+                f"update={update} "
                 f"reward={average_reward:.2f} "
                 f"actor_loss={actor_loss.item():.4f} "
                 f"critic_loss={critic_loss.item():.4f} "

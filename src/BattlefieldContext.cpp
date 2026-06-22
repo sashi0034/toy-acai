@@ -26,7 +26,7 @@ namespace
 
     double NormalizeAngle(double angle)
     {
-        return std::remainder(angle, TwoPi);
+        return Math::NormalizeAngle(angle, 0);
     }
 
     bool IsAlive(const FighterState& fighter)
@@ -96,19 +96,28 @@ namespace
         const Vec2 forward = Forward(shooter.yaw);
         constexpr double initialSpeed = 150.0;
         context.missiles.push_back(MissileState{
+            context.nextMissileId++,
+            shooter.teamId,
+            shooterIndex,
+            targetIndex,
             shooter.position + forward * (FighterSize * 0.75),
             shooter.yaw,
             initialSpeed,
             0.0,
             0.0,
-            shooter.teamId,
-            shooterIndex,
-            targetIndex,
-            context.nextMissileId++,
         });
 
         constexpr double cooldown = 3.5;
         shooter.missileCooldown = cooldown;
+    }
+
+    void CleanFighter(FighterState& fighter)
+    {
+        int teamId = fighter.teamId;
+        int memberId = fighter.memberId;
+        fighter = {};
+        fighter.teamId = teamId;
+        fighter.memberId = memberId;
     }
 
     void UpdateFighters(BattlefieldContext& context, const std::array<FighterInput, FighterCount>& inputs, double deltaTime)
@@ -118,6 +127,7 @@ namespace
             auto& fighter = context.fighters[i];
             if (!IsAlive(fighter))
             {
+                CleanFighter(fighter);
                 continue;
             }
 
@@ -220,9 +230,7 @@ namespace
             {
                 context.hitEvents.push_back(HitEvent{
                     missile.shooterFighterIndex,
-                    missile.teamId,
                     missile.targetFighterIndex,
-                    target->teamId,
                 });
                 target->health = 0.0;
                 continue;
@@ -241,6 +249,7 @@ namespace toy_acai
     {
         context.screenSize = {1920, 1080};
         context.battlefieldArea = RectF{Arg::center = context.screenSize * 0.5f, Vec2{1600, 900}};
+        context.battlefieldDiagonalLength = context.battlefieldArea.size.length();
         context.missiles.clear();
         context.hitEvents.clear();
         context.nextMissileId = 0;

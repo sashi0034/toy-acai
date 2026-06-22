@@ -125,6 +125,7 @@
   <ItemGroup>
     <ClCompile Include="..\src\BattlefieldContext.cpp" />
     <ClCompile Include="..\src\BattlefieldRenderer.cpp" />
+    <ClCompile Include="..\src\BattleFieldUtils.cpp" />
     <ClCompile Include="..\src\LivePPAddon.cpp" />
     <ClCompile Include="..\src\Main.cpp" />
     <ClCompile Include="stdafx.cpp">
@@ -339,6 +340,7 @@
     <ClInclude Include="..\src\BattlefieldContext.h" />
     <ClInclude Include="..\src\BattlefieldParameters.h" />
     <ClInclude Include="..\src\BattlefieldRenderer.h" />
+    <ClInclude Include="..\src\BattleFieldUtils.h" />
     <ClInclude Include="..\src\LivePPAddon.h" />
     <ClInclude Include="stdafx.h" />
   </ItemGroup>

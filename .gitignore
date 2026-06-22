@@ -16,3 +16,6 @@ linux-cli/battlefield.gif
 
 linux/*.sif
 linux-python/build/
+linux-python/stubs/
+
+AGENTS.override.md

@@ -9,6 +9,7 @@ include("${CMAKE_CURRENT_LIST_DIR}/../linux/FindSiv3D.cmake")
 add_executable(toy-acai
 	../src/BattlefieldContext.cpp
 	../src/BattlefieldRenderer.cpp
+	../src/BattleFieldUtils.cpp
 	../src/Main.cpp
 )
 

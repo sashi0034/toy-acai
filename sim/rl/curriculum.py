@@ -288,7 +288,7 @@ class MissileSurvivalCurriculum(Curriculum):
                 else 0.0
             )
 
-        forward_distance_from_boundary = core.compute_forward_distance_from_boundary(
+        forward_distance_from_boundary = core.compute_distance_from_boundary(
             ctx.battlefield, AGENT_FIGHTER_INDICES
         )
         if forward_distance_from_boundary.distance > 0.0:
@@ -384,11 +384,11 @@ class RandomOpponentCurriculum(Curriculum):
             # 近距離で敵機に正面を向けている場合は報酬を与える
             if (
                 relative_pose.relative_position.length_sq() < 200.0**2
-                and math.sin(relative_pose.relative_yaw) > math.sqrt(2) / 2
+                and math.sin(relative_pose.relative_bearing) > math.sqrt(2) / 2
             ):
                 reward += (
                     0.1
-                    * math.cos(relative_pose.relative_yaw)
+                    * math.cos(relative_pose.relative_bearing)
                     * constants.SIMULATION_DELTA_TIME
                 )
 

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import random
+import time
 from collections import deque
 from pathlib import Path
 
@@ -229,6 +230,8 @@ def run():
     curriculum = initial_curriculum(ctx)
 
     for update in range(hyperparameters.NUM_UPDATES):
+        update_start = time.perf_counter()
+
         batch_rewards = []
         batch_actor_losses = []
         batch_critic_losses = []
@@ -302,6 +305,8 @@ def run():
         value_loss.backward()
         value_optimizer.step()
 
+        update_elapsed = time.perf_counter() - update_start
+
         message = (
             f"curriculum={curriculum.name} "
             f"update={update + 1} episodes={hyperparameters.EPISODES_PER_UPDATE} "
@@ -311,6 +316,8 @@ def run():
             f"teacher_loss={teacher_loss.item() if teacher_loss is not None else 'None'} "
             f"teacher_samples={len(teacher_data)} "
             f"steps={sum(batch_steps) / len(batch_steps):.1f} "
+            "\n"
+            f"update_elapsed={update_elapsed:.1f}s"
         )
         print(message)
         if render_path_result is not None:

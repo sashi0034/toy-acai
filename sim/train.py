@@ -7,7 +7,7 @@ from PIL import Image
 import torch
 
 from .rl.curriculum import Curriculum, initial_curriculum
-from .rl.render_utils import render_reward, save_rendered_frames
+from .rl.render_utils import render_observation, render_reward, save_rendered_frames
 from .rl.observation import OBS_DIM, build_observation
 from .rl.policy import Policy
 from .rl.returns import compute_returns, normalize_returns
@@ -149,6 +149,7 @@ def run_episode(
 
                 frame = Image.fromarray(renderer.image_buffer(), mode="RGBA").copy()
                 frame = render_reward(frame, total_reward)
+                frame = render_observation(frame, obs_tensor)
                 frames.append(frame)
 
         if curriculum.is_terminal(ctx):

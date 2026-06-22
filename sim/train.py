@@ -239,15 +239,16 @@ def run():
         rng = random.Random(0)
 
         # 複数エピソードを実行して報酬と損失を収集する
+        render_path_result = None
         for episode_in_update in range(hyperparameters.EPISODES_PER_UPDATE):
-            render_path = (
-                (
+            render_path = None
+            if episode_in_update == (update % hyperparameters.EPISODES_PER_UPDATE):
+                assert render_path is None
+                render_path = (
                     ctx.output_directory()
                     / f"update_{update:04d}_{episode_in_update:04d}.gif"
                 )
-                if (episode_in_update == (update % hyperparameters.EPISODES_PER_UPDATE))
-                else None
-            )
+                render_path_result = render_path
 
             # 単一エピソードを実行して報酬と損失を計算する
             (
@@ -264,14 +265,6 @@ def run():
                 rng,
                 render_path,
             )
-
-            # レンダリング結果投稿
-            if render_path is not None and render_path.exists():
-                poster.post_file(
-                    render_path,
-                    f"toy-acai sim update {update + 1}: reward={total_reward:.3f}",
-                    f"update_{update:06d}_{episode_in_update:04d}",
-                )
 
             batch_rewards.append(total_reward)
             batch_actor_losses.append(actor_loss)
@@ -309,16 +302,23 @@ def run():
         value_loss.backward()
         value_optimizer.step()
 
-        print(
-            f"update={update + 1} episodes={hyperparameters.EPISODES_PER_UPDATE} "
+        message = (
             f"curriculum={curriculum.name} "
+            f"update={update + 1} episodes={hyperparameters.EPISODES_PER_UPDATE} "
             f"reward={sum(batch_rewards) / len(batch_rewards):.2f} "
             f"actor_loss={actor_loss.item():.4f} "
             f"critic_loss={critic_loss.item():.4f} "
-            f"teacher_loss={teacher_loss.item() if teacher_loss is not None else 0.0:.4f} "
+            f"teacher_loss={teacher_loss.item() if teacher_loss is not None else 'None'} "
             f"teacher_samples={len(teacher_data)} "
             f"steps={sum(batch_steps) / len(batch_steps):.1f} "
         )
+        print(message)
+        if render_path_result is not None:
+            poster.post_file(
+                render_path_result,
+                f"{render_path_result.stem}:\n```{message}```",
+                f"{render_path_result.stem}",
+            )
 
         next_curriculum = curriculum.after_update(ctx)
         if next_curriculum is not None:

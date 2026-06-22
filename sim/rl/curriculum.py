@@ -217,12 +217,14 @@ class MoveCurriculum(Curriculum):
                 * constants.SIMULATION_DELTA_TIME
             )
         else:
+            return -1.0 * constants.SIMULATION_DELTA_TIME
+
             # 境界法線方向なら最悪ペナルティ、逆向きになるにつれて緩和するイメージ
-            return (
-                -1.0
-                * (1.0 + math.cos(boundary_distance.relative_angle))
-                * constants.SIMULATION_DELTA_TIME
-            )
+            # return (
+            #     -1.0
+            #     * (1.0 + math.cos(boundary_distance.relative_angle))
+            #     * constants.SIMULATION_DELTA_TIME
+            # )
 
 
 class MissileSurvivalCurriculum(Curriculum):
@@ -307,12 +309,7 @@ class MissileSurvivalCurriculum(Curriculum):
                 * constants.SIMULATION_DELTA_TIME
             )
         else:
-            # 境界法線方向なら最悪ペナルティ、逆向きになるにつれて緩和するイメージ
-            return (
-                -1.0
-                * (1.0 + math.cos(boundary_distance.relative_angle))
-                * constants.SIMULATION_DELTA_TIME
-            )
+            return -1.0 * constants.SIMULATION_DELTA_TIME
 
 
 class RandomOpponentCurriculum(Curriculum):
@@ -459,7 +456,7 @@ class CurriculumController:
     """親プロセスでカリキュラムの段階と進捗だけを管理する"""
 
     def __init__(self):
-        self.config: CurriculumConfig = MoveCurriculum.Config()
+        self.config: CurriculumConfig = initial_curriculum
         self.progress = CurriculumProgress()
 
     @property
@@ -482,3 +479,6 @@ class CurriculumController:
         self.config = next_config
         self.progress = CurriculumProgress()
         return previous_name, self.name
+
+
+initial_curriculum = MoveCurriculum.Config()

@@ -144,7 +144,7 @@ def collect_episode(
 
             total_reward += reward
             total_reward += _apply_delayed_rewards(
-                rewards, curriculum.delayed_reward(ctx)
+                rewards, curriculum.delayed_reward(ctx, context_history[-1].battlefield)
             )
 
             if render:

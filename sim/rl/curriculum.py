@@ -90,6 +90,42 @@ def _agent_missile_hit_frames(ctx: WorkerContext, fighter_index: int) -> list[in
     ]
 
 
+def _agent_missile_delayed_rewards(
+    ctx: WorkerContext,
+    previous_battlefield: core.BattlefieldContext,
+    fighter_index: int,
+) -> list[tuple[int, float]]:
+    """Return delayed rewards once each of the agent's missiles has an outcome."""
+    hit_missile_ids = {
+        death_event.killer_missile.id
+        for death_event in ctx.battlefield.death_events
+        if death_event.reason == core.DeathEvent.Reason.HitByMissile
+    }
+    active_missile_ids = {missile.id for missile in ctx.battlefield.missiles}
+    
+    # 今回のフレームで自然消滅したミサイル
+    expired_missiles = [
+        missile
+        for missile in previous_battlefield.missiles
+        if missile.id not in active_missile_ids and missile.id not in hit_missile_ids
+    ]
+
+    # 命中報酬
+    rewards = [
+        (fired_frame, 2.0)
+        for fired_frame in _agent_missile_hit_frames(ctx, fighter_index)
+    ]
+    
+    # 空振りペナルティ
+    rewards.extend(
+        (missile.fired_frame, -0.5)
+        for missile in expired_missiles
+        if missile.shooter_fighter_index == fighter_index
+    )
+    
+    return rewards
+
+
 def _is_agent_winner(ctx: WorkerContext, opponent_count: int) -> bool:
     agent = ctx.battlefield.fighters[AGENT_FIGHTER_INDICES]
     if agent.health <= 0.0:
@@ -146,7 +182,9 @@ class Curriculum(ABC):
         inputs: list[core.FighterInput],
     ) -> float: ...
 
-    def delayed_reward(self, ctx: WorkerContext) -> list[tuple[int, float]]:
+    def delayed_reward(
+        self, ctx: WorkerContext, previous_battlefield: core.BattlefieldContext
+    ) -> list[tuple[int, float]]:
         return []
 
     @abstractmethod
@@ -425,11 +463,12 @@ class RandomOpponentCurriculum(Curriculum):
 
         return reward
 
-    def delayed_reward(self, ctx: WorkerContext) -> list[tuple[int, float]]:
-        return [
-            (fired_frame, 1.0)
-            for fired_frame in _agent_missile_hit_frames(ctx, AGENT_FIGHTER_INDICES)
-        ]
+    def delayed_reward(
+        self, ctx: WorkerContext, previous_battlefield: core.BattlefieldContext
+    ) -> list[tuple[int, float]]:
+        return _agent_missile_delayed_rewards(
+            ctx, previous_battlefield, AGENT_FIGHTER_INDICES
+        )
 
 
 class RuleBasedOpponentCurriculum(Curriculum):
@@ -481,11 +520,12 @@ class RuleBasedOpponentCurriculum(Curriculum):
     ) -> float:
         return -_agent_death_penalty(ctx, previous_battlefield, AGENT_FIGHTER_INDICES)
 
-    def delayed_reward(self, ctx: WorkerContext) -> list[tuple[int, float]]:
-        return [
-            (fired_frame, 1.0)
-            for fired_frame in _agent_missile_hit_frames(ctx, AGENT_FIGHTER_INDICES)
-        ]
+    def delayed_reward(
+        self, ctx: WorkerContext, previous_battlefield: core.BattlefieldContext
+    ) -> list[tuple[int, float]]:
+        return _agent_missile_delayed_rewards(
+            ctx, previous_battlefield, AGENT_FIGHTER_INDICES
+        )
 
 
 class CurriculumController:

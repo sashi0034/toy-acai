@@ -12,8 +12,8 @@ from .curriculum import Curriculum
 
 
 def try_create_missile_evasion_teacher_data(
-    context_history: deque[WorkerContextState],
-    inputs_history: deque[list[core.FighterInput]],
+    context_history_buffer: deque[WorkerContextState],
+    inputs_history_buffer: deque[list[core.FighterInput]],
     curriculum: Curriculum,
 ) -> list[tuple[torch.Tensor, torch.Tensor]]:
     """
@@ -21,8 +21,8 @@ def try_create_missile_evasion_teacher_data(
     """
 
     # 直近 30 フレームの履歴を使う
-    context_history = list(context_history)[-30:]
-    inputs_history = list(inputs_history)[-30:]
+    context_history = list(context_history_buffer)[-30:]
+    inputs_history = list(inputs_history_buffer)[-30:]
     if not context_history:
         return []
 
@@ -72,8 +72,8 @@ def try_create_missile_evasion_teacher_data(
 
 
 def try_create_boundary_recovery_teacher_data(
-    context_history: deque[WorkerContextState],
-    inputs_history: deque[list[core.FighterInput]],
+    context_history_buffer: deque[WorkerContextState],
+    inputs_history_buffer: deque[list[core.FighterInput]],
     curriculum: Curriculum,
 ) -> list[tuple[torch.Tensor, torch.Tensor]]:
     """
@@ -84,7 +84,7 @@ def try_create_boundary_recovery_teacher_data(
     boundary_entry_index = next(
         (
             index
-            for index, state in enumerate(context_history)
+            for index, state in enumerate(context_history_buffer)
             if state.battlefield.fighters[0].out_of_bounds_time > 0.0
         ),
         None,
@@ -92,8 +92,8 @@ def try_create_boundary_recovery_teacher_data(
     if boundary_entry_index is None:
         return []
 
-    context_history = list(context_history)[boundary_entry_index:]
-    inputs_history = list(inputs_history)[boundary_entry_index:]
+    context_history = list(context_history_buffer)[boundary_entry_index:]
+    inputs_history = list(inputs_history_buffer)[boundary_entry_index:]
 
     past_ctx = WorkerContext.from_state(context_history[0])
 

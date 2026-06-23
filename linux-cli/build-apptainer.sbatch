@@ -9,7 +9,5 @@
 
 set -euo pipefail
 
-REPO_ROOT=$(cd -- "${SLURM_SUBMIT_DIR}" && pwd)
-
-cd "${REPO_ROOT}/linux-cli"
+cd "${SLURM_SUBMIT_DIR}"
 srun ./build-apptainer.sh

@@ -30,7 +30,6 @@ namespace toy_acai
         double yaw;
         double speed;
         double age;
-        double lockLostTime;
     };
 
     struct DeathEvent

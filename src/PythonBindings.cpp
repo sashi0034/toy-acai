@@ -360,8 +360,7 @@ NB_MODULE(toy_acai_core, m)
         .def_rw("position", &toy_acai::MissileState::position)
         .def_rw("yaw", &toy_acai::MissileState::yaw)
         .def_rw("speed", &toy_acai::MissileState::speed)
-        .def_rw("age", &toy_acai::MissileState::age)
-        .def_rw("lock_lost_time", &toy_acai::MissileState::lockLostTime);
+        .def_rw("age", &toy_acai::MissileState::age);
 
     nb::class_<toy_acai::DeathEvent> deathEvent(m, "DeathEvent");
 

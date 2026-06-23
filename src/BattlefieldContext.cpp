@@ -88,13 +88,13 @@ namespace
         }
 
         const int targetIndex = FindMissileTarget(context, shooterIndex);
-        if (targetIndex == -1)
-        {
-            return;
-        }
+        // if (targetIndex == -1)
+        // {
+        //     return;
+        // }
 
         const Vec2 forward = Forward(shooter.yaw);
-        constexpr double initialSpeed = 150.0;
+        const double initialSpeed = 50.0 + shooter.speed;
         context.missiles.push_back(MissileState{
             context.nextMissileId++,
             shooter.teamId,
@@ -104,7 +104,6 @@ namespace
             shooter.position + forward * (FighterSize * 0.75),
             shooter.yaw,
             initialSpeed,
-            0.0,
             0.0,
         });
 
@@ -204,22 +203,7 @@ namespace
                     constexpr double turnRate = 1.5;
                     const double maxTurn = turnRate * deltaTime;
                     missile.yaw = NormalizeAngle(missile.yaw + std::clamp(yawDelta, -maxTurn, maxTurn));
-                    missile.lockLostTime = 0.0;
                 }
-                else
-                {
-                    missile.lockLostTime += deltaTime;
-                }
-            }
-            else
-            {
-                missile.lockLostTime += deltaTime;
-            }
-
-            constexpr double lockLostLifetime = 1.1;
-            if (lockLostLifetime < missile.lockLostTime)
-            {
-                continue;
             }
 
             constexpr double boostDuration = 0.5;

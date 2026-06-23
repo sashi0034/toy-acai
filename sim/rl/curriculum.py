@@ -102,7 +102,7 @@ def _agent_missile_delayed_rewards(
         if death_event.reason == core.DeathEvent.Reason.HitByMissile
     }
     active_missile_ids = {missile.id for missile in ctx.battlefield.missiles}
-    
+
     # 今回のフレームで自然消滅したミサイル
     expired_missiles = [
         missile
@@ -115,14 +115,14 @@ def _agent_missile_delayed_rewards(
         (fired_frame, 2.0)
         for fired_frame in _agent_missile_hit_frames(ctx, fighter_index)
     ]
-    
+
     # 空振りペナルティ
     rewards.extend(
         (missile.fired_frame, -0.5)
         for missile in expired_missiles
         if missile.shooter_fighter_index == fighter_index
     )
-    
+
     return rewards
 
 
@@ -424,7 +424,7 @@ class RandomOpponentCurriculum(Curriculum):
 
         # 場外ペナルティ
         reward = 0
-        if _is_inside_battlefield(ctx, agent.position):
+        if not _is_inside_battlefield(ctx, agent.position):
             reward += -1.0 * constants.SIMULATION_DELTA_TIME
 
         # 低速ペナルティ
@@ -557,4 +557,4 @@ class CurriculumController:
         return previous_name, self.name
 
 
-initial_curriculum = MoveCurriculum.Config()
+initial_curriculum = RandomOpponentCurriculum.Config()

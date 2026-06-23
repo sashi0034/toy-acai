@@ -179,11 +179,13 @@ def collect_episode(
         # 最終的に確定した各フレームの報酬情報を描画
         actual_total_rewards = np.cumsum(rewards)
         frames = [
-            render_actual_total_reward(
-                frame,
-                actual_total_rewards[(frame_index + 1) * render_every_steps - 1],
+            render_actual_total_reward(frame, total_reward, returns.item())
+            for frame, total_reward, returns in zip(
+                frames,
+                actual_total_rewards[render_every_steps - 1 :: render_every_steps],
+                returns[render_every_steps - 1 :: render_every_steps],
+                strict=True,
             )
-            for frame_index, frame in enumerate(frames)
         ]
 
         # GIF 形式で保存

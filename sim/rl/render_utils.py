@@ -43,13 +43,15 @@ def render_reward(
     return Image.alpha_composite(image, overlay)
 
 
-def render_actual_total_reward(frame: Image.Image, total_reward: float) -> Image.Image:
-    """Draw the delayed-reward-inclusive total attributed to this frame."""
+def render_actual_total_reward(
+    frame: Image.Image, total_reward: float, returns: float
+) -> Image.Image:
+    """Draw the delayed-reward-inclusive reward and return for this frame."""
     image = frame.convert("RGBA")
     overlay = Image.new("RGBA", image.size, (0, 0, 0, 0))
     draw = ImageDraw.Draw(overlay)
     font = ImageFont.load_default()
-    text = f"reward={total_reward:+.3f}"
+    text = f"reward={total_reward:+.3f}  return={returns:+.3f}"
     text_box = draw.textbbox((0, 0), text, font=font)
     padding = 6
     margin = 8

@@ -28,11 +28,17 @@ def try_create_missile_evasion_teacher_data(
 
     past_ctx = WorkerContext.from_state(context_history[0])
 
-    # 過去入力が左旋回をやっていたら、右急旋回を試してみる
-    override_turn = (
-        1.0
-        if sum(inputs_history[i][0].turn for i in range(len(inputs_history))) < 0.0
-        else -1.0
+    boundary_distance = core.compute_distance_from_boundary(past_ctx.battlefield, 0)
+
+    override_turn = (  # 境界内
+        (  # 過去入力が左旋回をやっていたら、右急旋回を試してみる
+            1.0
+            if sum(inputs_history[i][0].turn for i in range(len(inputs_history))) < 0.0
+            else -1.0
+        )
+        if boundary_distance.distance > 0.0
+        # 境界外にいるなら、境界内に戻る方向に急旋回を試してみる
+        else (-1.0 if math.sin(boundary_distance.relative_angle) < 0.0 else 1.0)
     )
 
     override_action = core.FighterInput(1.0, override_turn, False)

@@ -11,7 +11,6 @@ from .rule_based_ai import RuleBasedAI
 AGENT_FIGHTER_INDICES = 0
 OPPONENT_FIGHTER_INDICES = (4, 5, 6, 7)
 
-MOVE_CURRICULUM_UPDATES = 10
 PROMOTION_SUCCESS_RATE = 0.8
 
 
@@ -181,7 +180,7 @@ class MoveCurriculum(Curriculum):
 
         def next_config(self, progress: CurriculumProgress) -> CurriculumConfig | None:
             if (
-                progress.update_count >= MOVE_CURRICULUM_UPDATES
+                progress.update_count >= 50
                 and progress.success_rate >= PROMOTION_SUCCESS_RATE
             ):
                 return MissileSurvivalCurriculum.Config()
@@ -189,6 +188,21 @@ class MoveCurriculum(Curriculum):
 
     def setup_battlefield(self, ctx: WorkerContext):
         _setup_fighters(ctx, opponent_count=0)
+
+        # 境界外を初期配置とする
+        # agent = ctx.battlefield.fighters[AGENT_FIGHTER_INDICES]
+        # area = ctx.battlefield.battlefield_area.size
+
+        # margin = 120.0
+        # edge = int(ctx.rng.random() * 4.0)
+        # if edge == 0:
+        #     agent.position = core.Vec2(-margin, area.y * ctx.rng.random())
+        # elif edge == 1:
+        #     agent.position = core.Vec2(area.x + margin, area.y * ctx.rng.random())
+        # elif edge == 2:
+        #     agent.position = core.Vec2(area.x * ctx.rng.random(), -margin)
+        # else:
+        #     agent.position = core.Vec2(area.x * ctx.rng.random(), area.y + margin)
 
     def before_step(self, ctx: WorkerContext):
         pass
@@ -230,7 +244,7 @@ class MoveCurriculum(Curriculum):
             # 境界法線方向なら最悪ペナルティ、逆向きになるにつれて緩和するイメージ
             # return (
             #     -1.0
-            #     * (1.0 + math.cos(boundary_distance.relative_angle))
+            #     * (1.5 + math.cos(boundary_distance.relative_angle))
             #     * constants.SIMULATION_DELTA_TIME
             # )
 

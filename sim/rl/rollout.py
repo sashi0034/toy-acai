@@ -159,7 +159,7 @@ def collect_episode(
                     renderer.render(battlefield)
                     frame = Image.fromarray(renderer.image_buffer(), mode="RGBA").copy()
 
-                    # FIXME: 前フレームの情報が描画されている
+                    # FIXME: value, observation は前フレーム情報が描画されている
                     frame = render_reward(frame, total_reward, value.item())
                     frames.append(render_observation(frame, observation))
 

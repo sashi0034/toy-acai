@@ -95,7 +95,7 @@ def collect_episode(
     rewards = []
     total_reward = 0.0
 
-    history_length = round(5.0 / constants.SIMULATION_DELTA_TIME) # FIXME?
+    history_length = round(5.0 / constants.SIMULATION_DELTA_TIME)  # FIXME?
     context_history: deque[WorkerContextState] = deque(maxlen=history_length)
     inputs_history: deque[list[core.FighterInput]] = deque(maxlen=history_length)
 
@@ -172,19 +172,27 @@ def collect_episode(
         assert render_path is not None
         save_rendered_frames(frames, render_path, constants.RENDER_INTERVAL)
 
-    killed_by_missile = any(
-        death_event.reason == core.DeathEvent.Reason.HitByMissile
-        and death_event.fighter_index == 0
-        for death_event in battlefield.death_events
+    agent_death_event = next(
+        (
+            death_event
+            for death_event in battlefield.death_events
+            if death_event.fighter_index == 0
+        ),
+        None,
     )
+
     teacher_data = (
-        try_create_missile_evasion_teacher_data(
-            context_history, inputs_history, curriculum
+        (
+            try_create_missile_evasion_teacher_data(
+                context_history, inputs_history, curriculum
+            )
+            if agent_death_event.reason == core.DeathEvent.Reason.HitByMissile
+            else try_create_boundary_recovery_teacher_data(
+                context_history, inputs_history, curriculum
+            )
         )
-        if killed_by_missile
-        else try_create_boundary_recovery_teacher_data(
-            context_history, inputs_history, curriculum
-        )
+        if agent_death_event is not None
+        else []
     )
 
     return Rollout(

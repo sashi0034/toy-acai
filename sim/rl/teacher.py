@@ -80,20 +80,23 @@ def try_create_boundary_recovery_teacher_data(
     過去に戻して境界外に出ているとき、境界内に戻るように入力調整
     """
 
-    # 境界外に出たフレームからの履歴を使う
+    context_history = list(context_history_buffer)
+    inputs_history = list(inputs_history_buffer)
+
+    # 逆順から見て境界外に出た最初のフレームを探す
     boundary_entry_index = next(
         (
-            index
-            for index, state in enumerate(context_history_buffer)
-            if state.battlefield.fighters[0].out_of_bounds_time > 0.0
+            index + 1
+            for index in range(len(context_history) - 1, -1, -1)
+            if context_history[index].battlefield.fighters[0].out_of_bounds_time <= 0.0
         ),
-        None,
+        0,
     )
-    if boundary_entry_index is None:
+    if boundary_entry_index == len(context_history):
         return []
 
-    context_history = list(context_history_buffer)[boundary_entry_index:]
-    inputs_history = list(inputs_history_buffer)[boundary_entry_index:]
+    context_history = context_history[boundary_entry_index:]
+    inputs_history = inputs_history[boundary_entry_index:]
 
     past_ctx = WorkerContext.from_state(context_history[0])
 
@@ -104,11 +107,11 @@ def try_create_boundary_recovery_teacher_data(
         boundary_distance = core.compute_distance_from_boundary(past_ctx.battlefield, 0)
         relative_angle = boundary_distance.relative_angle
         action = core.FighterInput(
-            acceleration=math.cos(
+            acceleration=-math.cos(
                 relative_angle
             ),  # 境界と法線方向のときは急減速、逆法線方向のときは急加速
             turn=-1.0 if math.sin(relative_angle) < 0.0 else 1.0,
-            fire=False,
+            fire=inputs[0].fire,
         )
 
         teacher_data.append(
@@ -129,8 +132,4 @@ def try_create_boundary_recovery_teacher_data(
             # 死亡
             break
 
-    return (
-        teacher_data
-        if core.compute_distance_from_boundary(past_ctx.battlefield, 0).distance >= 0.0
-        else []
-    )
+    return teacher_data

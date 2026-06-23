@@ -6,6 +6,9 @@ from PIL import Image, ImageDraw, ImageFont
 from .observation import ObservationFeature
 
 
+HIGHLIGHT_TEXT_COLOR = (255, 220, 120, 235)
+
+
 def render_reward(
     frame: Image.Image, total_reward: float, critic_value: float | None = None
 ) -> Image.Image:
@@ -19,8 +22,12 @@ def render_reward(
     text_box = draw.textbbox((0, 0), text, font=font)
     padding = 6
     margin = 8
+    line_height = text_box[3]
     panel_width = text_box[2] - text_box[0] + padding * 2
-    panel_height = text_box[3] - text_box[1] + padding * 2
+
+    # Reserve the second line for the final total reward, which is known only
+    # after the episode finishes.
+    panel_height = line_height * 2 + padding * 2
 
     draw.rounded_rectangle(
         (margin, margin, margin + panel_width, margin + panel_height),
@@ -31,6 +38,27 @@ def render_reward(
         (margin + padding, margin + padding),
         text,
         fill=(255, 255, 255, 235),
+        font=font,
+    )
+    return Image.alpha_composite(image, overlay)
+
+
+def render_actual_total_reward(frame: Image.Image, total_reward: float) -> Image.Image:
+    """Draw the delayed-reward-inclusive total attributed to this frame."""
+    image = frame.convert("RGBA")
+    overlay = Image.new("RGBA", image.size, (0, 0, 0, 0))
+    draw = ImageDraw.Draw(overlay)
+    font = ImageFont.load_default()
+    text = f"reward={total_reward:+.3f}"
+    text_box = draw.textbbox((0, 0), text, font=font)
+    padding = 6
+    margin = 8
+    line_height = text_box[3]
+
+    draw.text(
+        (margin + padding, margin + padding + line_height),
+        text,
+        fill=HIGHLIGHT_TEXT_COLOR,
         font=font,
     )
     return Image.alpha_composite(image, overlay)
@@ -88,7 +116,7 @@ def render_observation(
                 ),
                 fill=(255, 255, 255, 100),
             )
-        draw.text((panel_x + padding, y), name, fill=(255, 220, 120, 235), font=font)
+        draw.text((panel_x + padding, y), name, fill=HIGHLIGHT_TEXT_COLOR, font=font)
         y += line_height
         for feature in group_features:
             draw.text(

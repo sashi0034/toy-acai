@@ -12,7 +12,12 @@ from ..simulation_context import WorkerContext, WorkerContextState
 from .curriculum import Curriculum, CurriculumController
 from .observation import OBS_DIM, build_observation, observation_to_tensor
 from .policy_network import PolicyNetwork
-from .render_utils import render_observation, render_reward, save_rendered_frames
+from .render_utils import (
+    render_actual_total_reward,
+    render_observation,
+    render_reward,
+    save_rendered_frames,
+)
 from .returns import compute_returns, normalize_returns
 from .value_network import ValueNetwork
 from .input_utils import copy_inputs
@@ -170,6 +175,18 @@ def collect_episode(
 
     if render:
         assert render_path is not None
+
+        # 最終的に確定した各フレームの報酬情報を描画
+        actual_total_rewards = np.cumsum(rewards)
+        frames = [
+            render_actual_total_reward(
+                frame,
+                actual_total_rewards[(frame_index + 1) * render_every_steps - 1],
+            )
+            for frame_index, frame in enumerate(frames)
+        ]
+
+        # GIF 形式で保存
         save_rendered_frames(frames, render_path, constants.RENDER_INTERVAL)
 
     agent_death_event = next(

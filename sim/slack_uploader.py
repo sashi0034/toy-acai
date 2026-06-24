@@ -6,7 +6,13 @@ import os
 from pathlib import Path
 import time
 
-from ._slack import SlackThread, file_share_ts, load_dotenv, upload_file
+from ._slack import (
+    SlackThread,
+    file_share_ts,
+    load_dotenv,
+    training_started_message,
+    upload_file,
+)
 
 
 def repository_root() -> Path:
@@ -43,8 +49,9 @@ def upload_record(record_path: Path, thread: SlackThread) -> None:
     record = json.loads(record_path.read_text(encoding="utf-8"))
     if record.get("type") == "thread_root":
         attachment = Path(record["attachment_path"])
+        comment = record.get("comment") or training_started_message()
         if thread.dry_run:
-            thread.post_root(record.get("comment", "toy-acai sim training started"), attachment)
+            thread.post_root(comment, attachment)
             return
         file_id = record.get("uploaded_file_id")
         if not file_id:
@@ -52,7 +59,7 @@ def upload_record(record_path: Path, thread: SlackThread) -> None:
                 thread.token,
                 thread.channel_id,
                 attachment,
-                record.get("comment", "toy-acai sim training started"),
+                comment,
             )
             record["uploaded_file_id"] = file_id
             record_path.write_text(json.dumps(record, indent=2, sort_keys=True), encoding="utf-8")

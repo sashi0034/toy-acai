@@ -128,7 +128,7 @@ def run():
                     value_state,
                     curriculum_controller,
                 )
-                for episode_in_update in range(hyperparameters.EPISODES_PER_UPDATE)
+                for episode_in_update in range(hyperparameters.EPISODES_PER_UPDATE - 1)
             ]
 
             # ワーカープロセスとは非同期に親プロセスでも実行 (描画あり)

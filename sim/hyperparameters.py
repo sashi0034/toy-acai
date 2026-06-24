@@ -15,6 +15,9 @@ EPISODES_PER_UPDATE = 16
 # 教師データを用いた更新の頻度
 TEACHER_UPDATE_INTERVAL = 5
 
+# 1 エピソードの teacher から使う最大サンプル数
+MAX_TEACHER_SAMPLES = 30
+
 # ステップごとの報酬割引率
 REWARD_DISCOUNT = 0.99
 

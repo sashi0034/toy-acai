@@ -3,7 +3,7 @@ from collections import deque
 
 import torch
 
-from .. import constants
+from .. import constants, hyperparameters
 from ..core import core
 from ..simulation_context import WorkerContext, WorkerContextState
 from .input_utils import copy_inputs as _copy_inputs
@@ -20,9 +20,9 @@ def try_create_missile_evasion_teacher_data(
     過去に巻き戻し、直前で回避行動可能ならそれを教師データとする
     """
 
-    # 直近 30 フレームの履歴を使う
-    context_history = list(context_history_buffer)[-30:]
-    inputs_history = list(inputs_history_buffer)[-30:]
+    # 直近フレームの履歴を使う
+    context_history = list(context_history_buffer)[-hyperparameters.MAX_TEACHER_SAMPLES :]
+    inputs_history = list(inputs_history_buffer)[-hyperparameters.MAX_TEACHER_SAMPLES :]
     if not context_history:
         return []
 
@@ -143,4 +143,8 @@ def try_create_boundary_recovery_teacher_data(
             # 死亡
             break
 
-    return teacher_data
+    # 境界外にいた区間から教師データを偏りなく最大数まで抽出する。
+    sample_indices = torch.randperm(len(teacher_data))[
+        : hyperparameters.MAX_TEACHER_SAMPLES
+    ].tolist()
+    return [teacher_data[index] for index in sample_indices]

@@ -11,6 +11,8 @@ from .observation import build_observation, observation_to_tensor
 from .curriculum import Curriculum
 
 
+MISSILE_EVASION_SAMPLES = 30
+
 def try_create_missile_evasion_teacher_data(
     context_history_buffer: deque[WorkerContextState],
     inputs_history_buffer: deque[list[core.FighterInput]],
@@ -21,8 +23,8 @@ def try_create_missile_evasion_teacher_data(
     """
 
     # 直近フレームの履歴を使う
-    context_history = list(context_history_buffer)[-hyperparameters.MAX_TEACHER_SAMPLES :]
-    inputs_history = list(inputs_history_buffer)[-hyperparameters.MAX_TEACHER_SAMPLES :]
+    context_history = list(context_history_buffer)[-MISSILE_EVASION_SAMPLES :]
+    inputs_history = list(inputs_history_buffer)[-MISSILE_EVASION_SAMPLES :]
     if not context_history:
         return []
 
@@ -143,8 +145,10 @@ def try_create_boundary_recovery_teacher_data(
             # 死亡
             break
 
+    return teacher_data
+
     # 境界外にいた区間から教師データを偏りなく最大数まで抽出する。
-    sample_indices = torch.randperm(len(teacher_data))[
-        : hyperparameters.MAX_TEACHER_SAMPLES
-    ].tolist()
-    return [teacher_data[index] for index in sample_indices]
+    # sample_indices = torch.randperm(len(teacher_data))[
+    #     : hyperparameters.MAX_TEACHER_SAMPLES
+    # ].tolist()
+    # return [teacher_data[index] for index in sample_indices]

@@ -38,7 +38,7 @@ class Rollout:
     returns: np.ndarray
     advantages: np.ndarray
     steps: int
-    teacher_data: list[tuple[np.ndarray, np.ndarray]]
+    teacher_data: list[tuple[np.ndarray, np.ndarray, np.ndarray]]
     is_success: bool
 
 
@@ -223,8 +223,8 @@ def collect_episode(
         advantages=advantages.numpy(),
         steps=step,
         teacher_data=[
-            (observation.numpy(), action.numpy())
-            for observation, action in teacher_data
+            (observation.numpy(), action.numpy(), action_learning_mask.numpy())
+            for observation, action, action_learning_mask in teacher_data
         ],
         is_success=curriculum.is_success(ctx),
     )

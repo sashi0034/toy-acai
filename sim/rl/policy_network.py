@@ -84,11 +84,20 @@ class PolicyNetwork(nn.Module):
 
         return log_prob
 
-    def supervised_loss(self, observations: torch.Tensor, actions: torch.Tensor):
-        mean, _, fire_logit = self.forward(observations)
+    def supervised_loss(
+        self,
+        observations: torch.Tensor,
+        actions: torch.Tensor,
+        action_learning_masks: torch.Tensor,
+    ):
+        mean, _, _ = self.forward(observations)
 
         # 平均二乗誤差 (Mean Squared Error)
-        return F.mse_loss(
-            torch.tanh(mean),  # (batch_size, 2)
-            actions[:, :2],
+        squared_errors = F.mse_loss(
+            torch.tanh(mean), actions[:, :2], reduction="none"
+        )
+
+        # 対象は action_learning_mask で指定
+        return (squared_errors * action_learning_masks).sum() / (
+            action_learning_masks.sum()
         )  # + F.binary_cross_entropy_with_logits(fire_logit, actions[:, 2])

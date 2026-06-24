@@ -163,13 +163,21 @@ def run():
             teacher_loss = None
             if teacher_data and (update % hyperparameters.TEACHER_UPDATE_INTERVAL) == 0:
                 teacher_observations = torch.stack(
-                    [torch.from_numpy(observation) for observation, _ in teacher_data]
+                    [
+                        torch.from_numpy(observation)
+                        for observation, _, _ in teacher_data
+                    ]
                 ).to(device)
                 teacher_actions = torch.stack(
-                    [torch.from_numpy(action) for _, action in teacher_data]
+                    [torch.from_numpy(action) for _, action, _ in teacher_data]
+                ).to(device)
+                teacher_action_learning_masks = torch.stack(
+                    [torch.from_numpy(mask) for _, _, mask in teacher_data]
                 ).to(device)
                 teacher_loss = policy_network.supervised_loss(
-                    teacher_observations, teacher_actions
+                    teacher_observations,
+                    teacher_actions,
+                    teacher_action_learning_masks,
                 )
 
             # 方策更新

@@ -436,30 +436,30 @@ class RandomOpponentCurriculum(Curriculum):
             _agent_death_penalty(ctx, previous_battlefield, AGENT_FIGHTER_INDICES) * 1.0
         )
 
-        # nearest_opponent = min(
-        #     (
-        #         fighter
-        #         for fighter in ctx.battlefield.fighters
-        #         if fighter.team_id == 1 and fighter.health > 0.0
-        #     ),
-        #     key=lambda fighter: agent.position.distance_from_sq(fighter.position),
-        #     default=None,
-        # )
-        # if nearest_opponent is not None and agent.health > 0.0:
-        #     relative_pose = core.compute_relative_pose(
-        #         core.AbsolutePose(agent), core.AbsolutePose(nearest_opponent)
-        #     )
+        nearest_opponent = min(
+            (
+                fighter
+                for fighter in ctx.battlefield.fighters
+                if fighter.team_id == 1 and fighter.health > 0.0
+            ),
+            key=lambda fighter: agent.position.distance_from_sq(fighter.position),
+            default=None,
+        )
 
-        #     # 近距離で敵機に正面を向けている場合は報酬を与える
-        #     if (
-        #         relative_pose.relative_position.length_sq() < 200.0**2
-        #         and math.sin(relative_pose.relative_bearing) > math.sqrt(2) / 2
-        #     ):
-        #         reward += (
-        #             0.1
-        #             * math.cos(relative_pose.relative_bearing)
-        #             * constants.SIMULATION_DELTA_TIME
-        #         )
+        if nearest_opponent is not None and agent.health > 0.0:
+            relative_pose = core.compute_relative_pose(
+                core.AbsolutePose(agent), core.AbsolutePose(nearest_opponent)
+            )
+
+            distance_sq = relative_pose.relative_position.length_sq()
+            forward_alignment = (
+                relative_pose.relative_position.y
+                / relative_pose.relative_position.length()
+            )
+
+            # 適度な距離で敵機へ正面を向けている場合に報酬を与える
+            if 100.0**2 <= distance_sq and forward_alignment > math.sqrt(2) / 2:
+                reward += 0.1 * forward_alignment * constants.SIMULATION_DELTA_TIME
 
         return reward
 

@@ -113,9 +113,9 @@ def try_create_boundary_recovery_teacher_data(
         boundary_distance = core.compute_distance_from_boundary(past_ctx.battlefield, 0)
         relative_angle = boundary_distance.relative_angle
         action = core.FighterInput(
-            acceleration=-math.cos(
+            acceleration=max(0.0, -math.cos(
                 relative_angle
-            ),  # 境界と法線方向のときは急減速、逆法線方向のときは急加速
+            )),  # 境界と法線方向のときは減速、逆法線方向のときは急加速
             turn=-1.0 if math.sin(relative_angle) < 0.0 else 1.0,
             fire=inputs[0].fire,
         )

@@ -138,24 +138,24 @@ def _is_agent_winner(ctx: WorkerContext, opponent_count: int) -> bool:
 
 @dataclass
 class CurriculumProgress:
-    episode_count: int = 0
-    success_count: int = 0
+    _episode_count: int = 0
+    _success_count: int = 0
     update_count: int = 0
     success_rate: float = 0.0
 
     def record_episode(self, is_success: bool):
-        self.episode_count += 1
+        self._episode_count += 1
         if is_success:
-            self.success_count += 1
+            self._success_count += 1
 
     def complete_update(self):
-        if self.episode_count == 0:
+        if self._episode_count == 0:
             raise RuntimeError("Cannot finish a curriculum update without episodes")
 
-        self.success_rate = self.success_count / self.episode_count
+        self.success_rate = self._success_count / self._episode_count
         self.update_count += 1
-        self.episode_count = 0
-        self.success_count = 0
+        self._episode_count = 0
+        self._success_count = 0
 
 
 # カリキュラムの共通インターフェース。振る舞いは各実装が持つ。

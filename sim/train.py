@@ -204,6 +204,7 @@ def run():
             message = (
                 f"curriculum={curriculum_controller.name} "
                 f"update={update} "
+                f"success_rate={curriculum_controller.progress.success_rate:.2f} "
                 f"reward={average_reward:.2f} "
                 f"actor_loss={actor_loss.item():.4f} "
                 f"critic_loss={critic_loss.item():.4f} "

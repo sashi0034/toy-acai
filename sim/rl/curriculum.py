@@ -141,21 +141,22 @@ class CurriculumProgress:
     _episode_count: int = 0
     _success_count: int = 0
     update_count: int = 0
-    success_rate: float = 0.0
 
     def record_episode(self, is_success: bool):
         self._episode_count += 1
         if is_success:
             self._success_count += 1
 
-    def complete_update(self):
-        if self._episode_count == 0:
-            raise RuntimeError("Cannot finish a curriculum update without episodes")
-
-        self.success_rate = self._success_count / self._episode_count
-        self.update_count += 1
+    def reset_episode(self):
         self._episode_count = 0
         self._success_count = 0
+        
+    @property
+    def success_rate(self) -> float:
+        if self._episode_count == 0:
+            return 0.0
+
+        return self._success_count / self._episode_count
 
 
 # カリキュラムの共通インターフェース。振る舞いは各実装が持つ。
@@ -546,8 +547,12 @@ class CurriculumController:
         self.progress.record_episode(is_success)
 
     def after_update(self) -> tuple[str, str] | None:
-        self.progress.complete_update()
+        self.progress.update_count += 1
+
         next_config = self.config.next_config(self.progress)
+
+        self.progress.reset_episode()
+
         if next_config is None:
             return None
 

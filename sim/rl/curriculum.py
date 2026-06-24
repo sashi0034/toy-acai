@@ -453,14 +453,21 @@ class RandomOpponentCurriculum(Curriculum):
             )
 
             distance_sq = relative_pose.relative_position.length_sq()
-            forward_alignment = (
+            opponent_bearing_sin = (
                 relative_pose.relative_position.y
                 / relative_pose.relative_position.length()
             )
 
-            # 適度な距離で敵機へ正面を向けている場合に報酬を与える
-            if 100.0**2 <= distance_sq and forward_alignment > math.sqrt(2) / 2:
-                reward += 0.1 * forward_alignment * constants.SIMULATION_DELTA_TIME
+            # 敵機へ正面を向けている場合に報酬を与える
+            if opponent_bearing_sin > math.sqrt(2) / 2:
+                # 一定の距離は保ってほしい
+                if distance_sq >= 100.0**2:
+                    reward += 0.1 * opponent_bearing_sin * constants.SIMULATION_DELTA_TIME
+            else:
+                # ミサイル発射入力ペナルティ
+                if inputs[AGENT_FIGHTER_INDICES].fire:
+                    reward += -1.0 * constants.SIMULATION_DELTA_TIME
+
 
         return reward
 

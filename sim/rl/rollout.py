@@ -18,7 +18,7 @@ from .render_utils import (
     render_reward,
     save_rendered_frames,
 )
-from .returns import compute_returns, normalize_returns
+from .returns import compute_gae, normalize_returns
 from .value_network import ValueNetwork
 from .input_utils import copy_inputs
 from .teacher import (
@@ -166,12 +166,29 @@ def collect_episode(
             if curriculum.is_terminal(ctx):
                 break
 
-    # 報酬計算
-    returns = compute_returns(rewards, hyperparameters.REWARD_DISCOUNT)
+    # 収益計算 (GAE)
+    reward_tensor = torch.tensor(rewards, dtype=torch.float32)
+    value_tensor = torch.stack(values)
 
-    # Monte Carlo Advantage
-    # FIXME: 分散が大きいので GAE にしたい
-    advantages = normalize_returns(returns - torch.stack(values))
+    if curriculum.is_terminal(ctx):
+        last_value = 0.0
+    else:
+        last_observation = observation_to_tensor(build_observation(battlefield)).to(
+            device
+        )
+        with torch.no_grad():
+            last_value = value_network(last_observation).cpu()
+
+    advantages, returns = compute_gae(
+        reward_tensor,
+        value_tensor,
+        hyperparameters.REWARD_DISCOUNT,
+        hyperparameters.GAE_LAMBDA,
+        last_value,
+    )
+    advantages = normalize_returns(advantages)
+
+    # -----------------------------------------------
 
     if render:
         assert render_path is not None
@@ -190,6 +207,8 @@ def collect_episode(
 
         # GIF 形式で保存
         save_rendered_frames(frames, render_path, constants.RENDER_INTERVAL)
+
+    # -----------------------------------------------
 
     agent_death_event = next(
         (

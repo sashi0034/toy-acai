@@ -18,6 +18,9 @@ TEACHER_UPDATE_INTERVAL = 5
 # ステップごとの報酬割引率
 REWARD_DISCOUNT = 0.99
 
+# GAE のトレース減衰率 λ
+GAE_LAMBDA = 0.95
+
 # 最大シミュレーション時間 (秒)
 MAX_SIMULATION_SECONDS = 15.0
 

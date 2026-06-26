@@ -9,12 +9,18 @@ from .observation import ObservationFeature
 HIGHLIGHT_TEXT_COLOR = (255, 220, 120, 235)
 
 
+def _ensure_rgba(frame: Image.Image) -> Image.Image:
+    if frame.mode == "RGBA":
+        return frame
+    print(f"[WARN] converting render frame from {frame.mode} to RGBA")
+    return frame.convert("RGBA")
+
+
 def render_reward(
     frame: Image.Image, total_reward: float, critic_value: float | None = None
 ) -> Image.Image:
-    image = frame.convert("RGBA")
-    overlay = Image.new("RGBA", image.size, (0, 0, 0, 0))
-    draw = ImageDraw.Draw(overlay)
+    image = _ensure_rgba(frame)
+    draw = ImageDraw.Draw(image, "RGBA")
     font = ImageFont.load_default()
     text = f"reward={total_reward:+.3f}"
     if critic_value is not None:
@@ -40,16 +46,15 @@ def render_reward(
         fill=(255, 255, 255, 235),
         font=font,
     )
-    return Image.alpha_composite(image, overlay)
+    return image
 
 
 def render_actual_total_reward(
     frame: Image.Image, total_reward: float, returns: float
 ) -> Image.Image:
     """Draw the delayed-reward-inclusive reward and return for this frame."""
-    image = frame.convert("RGBA")
-    overlay = Image.new("RGBA", image.size, (0, 0, 0, 0))
-    draw = ImageDraw.Draw(overlay)
+    image = _ensure_rgba(frame)
+    draw = ImageDraw.Draw(image, "RGBA")
     font = ImageFont.load_default()
     text = f"reward={total_reward:+.3f}  return={returns:+.3f}"
     text_box = draw.textbbox((0, 0), text, font=font)
@@ -63,15 +68,14 @@ def render_actual_total_reward(
         fill=HIGHLIGHT_TEXT_COLOR,
         font=font,
     )
-    return Image.alpha_composite(image, overlay)
+    return image
 
 
 def render_observation(
     frame: Image.Image, features: Sequence[ObservationFeature]
 ) -> Image.Image:
-    image = frame.convert("RGBA")
-    overlay = Image.new("RGBA", image.size, (0, 0, 0, 0))
-    draw = ImageDraw.Draw(overlay)
+    image = _ensure_rgba(frame)
+    draw = ImageDraw.Draw(image, "RGBA")
     font = ImageFont.load_default()
 
     groups: list[tuple[str, list[ObservationFeature]]] = []
@@ -137,7 +141,7 @@ def render_observation(
             y += line_height
         y += group_gap
 
-    return Image.alpha_composite(image, overlay)
+    return image
 
 
 def save_rendered_frames(

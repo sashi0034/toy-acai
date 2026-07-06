@@ -51,12 +51,13 @@ class ToyAcaiBindingsTest(unittest.TestCase):
         self.assertEqual(self.context.missiles[0].speed, 75.0)
         self.context.missiles.clear()
 
-        hit_event = toy_acai_core.HitEvent()
-        hit_event.shooter_fighter_index = 1
-        hit_event.target_fighter_index = 5
-        self.context.hit_events.append(hit_event)
-        self.context.hit_events[0].target_fighter_index = 6
-        self.assertEqual(self.context.hit_events[0].target_fighter_index, 6)
+        death_event = toy_acai_core.DeathEvent()
+        death_event.reason = toy_acai_core.DeathEvent.Reason.HitByMissile
+        death_event.fighter_index = 5
+        death_event.killer_missile = missile
+        self.context.death_events.append(death_event)
+        self.context.death_events[0].fighter_index = 6
+        self.assertEqual(self.context.death_events[0].fighter_index, 6)
 
     def test_input_count_and_fighter_index_are_checked(self):
         with self.assertRaises(ValueError):

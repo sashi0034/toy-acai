@@ -88,22 +88,22 @@ namespace
         }
 
         const int targetIndex = FindMissileTarget(context, shooterIndex);
-        if (targetIndex == -1)
-        {
-            return;
-        }
+        // if (targetIndex == -1)
+        // {
+        //     return;
+        // }
 
         const Vec2 forward = Forward(shooter.yaw);
-        constexpr double initialSpeed = 150.0;
+        const double initialSpeed = 50.0 + shooter.speed;
         context.missiles.push_back(MissileState{
             context.nextMissileId++,
             shooter.teamId,
+            context.frameCount,
             shooterIndex,
             targetIndex,
             shooter.position + forward * (FighterSize * 0.75),
             shooter.yaw,
             initialSpeed,
-            0.0,
             0.0,
         });
 
@@ -157,6 +157,11 @@ namespace
                 constexpr double outOfBoundsDeathTime = 3.0;
                 if (outOfBoundsDeathTime <= fighter.outOfBoundsTime)
                 {
+                    context.deathEvents.push_back(DeathEvent{
+                        DeathEvent::Reason::OutOfBounds,
+                        i,
+                        MissileState{},
+                    });
                     fighter.health = 0.0;
                     continue;
                 }
@@ -198,22 +203,7 @@ namespace
                     constexpr double turnRate = 1.5;
                     const double maxTurn = turnRate * deltaTime;
                     missile.yaw = NormalizeAngle(missile.yaw + std::clamp(yawDelta, -maxTurn, maxTurn));
-                    missile.lockLostTime = 0.0;
                 }
-                else
-                {
-                    missile.lockLostTime += deltaTime;
-                }
-            }
-            else
-            {
-                missile.lockLostTime += deltaTime;
-            }
-
-            constexpr double lockLostLifetime = 1.1;
-            if (lockLostLifetime < missile.lockLostTime)
-            {
-                continue;
             }
 
             constexpr double boostDuration = 0.5;
@@ -228,9 +218,10 @@ namespace
             constexpr double hitRadius = MissileSize;
             if (targetAlive && DistanceSq(missile.position, target->position) <= hitRadius * hitRadius)
             {
-                context.hitEvents.push_back(HitEvent{
-                    missile.shooterFighterIndex,
+                context.deathEvents.push_back(DeathEvent{
+                    DeathEvent::Reason::HitByMissile,
                     missile.targetFighterIndex,
+                    missile,
                 });
                 target->health = 0.0;
                 continue;
@@ -247,11 +238,12 @@ namespace toy_acai
 {
     void InitBattlefield(BattlefieldContext& context)
     {
+        context.frameCount = 0;
         context.screenSize = {1920, 1080};
         context.battlefieldArea = RectF{Arg::center = context.screenSize * 0.5f, Vec2{1600, 900}};
         context.battlefieldDiagonalLength = context.battlefieldArea.size.length();
         context.missiles.clear();
-        context.hitEvents.clear();
+        context.deathEvents.clear();
         context.nextMissileId = 0;
 
         for (int team = 0; team < TeamCount; ++team)
@@ -279,10 +271,12 @@ namespace toy_acai
 
     void UpdateBattlefield(BattlefieldContext& context, const std::array<FighterInput, FighterCount>& inputs, double deltaTime)
     {
-        context.hitEvents.clear();
+        context.deathEvents.clear();
 
         UpdateFighters(context, inputs, deltaTime);
 
         UpdateMissiles(context, deltaTime);
+
+        context.frameCount++;
     }
 }

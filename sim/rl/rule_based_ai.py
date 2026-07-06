@@ -16,7 +16,7 @@ from ..core import core
 from ..math_utils import clamp, normalize_angle
 
 if TYPE_CHECKING:
-    from ..simulation_context import SimulationContext
+    from ..simulation_context import WorkerContext
 
 
 # TURN_SIMILAR_DURATION_STEPS の間で同じ方向へ回転入力し続けた場合、TURN_PAUSE_STEPS の間回転入力を無効化
@@ -52,7 +52,7 @@ class RuleBasedAI:
     def reset(self) -> None:
         self._member_states.clear()
 
-    def inputs(self, ctx: SimulationContext) -> dict[int, core.FighterInput]:
+    def inputs(self, ctx: WorkerContext) -> dict[int, core.FighterInput]:
         """Return ``FighterInput`` values keyed by controlled fighter index."""
         fighters = ctx.battlefield.fighters
         target_team_id = 1 - self.team_id
@@ -101,7 +101,7 @@ class RuleBasedAI:
         return self._turn_for_yaw_delta(yaw_delta), abs(yaw_delta) < FIRE_ANGLE
 
     def _turn_toward_battlefield_center(
-        self, ctx: SimulationContext, fighter: core.FighterState
+        self, ctx: WorkerContext, fighter: core.FighterState
     ) -> float:
         area = ctx.battlefield.battlefield_area
         if (

@@ -29,7 +29,7 @@ namespace
 {
     using FrameArray = nb::ndarray<nb::numpy, std::uint8_t, nb::ndim<3>>;
     using MissileStates = std::vector<toy_acai::MissileState>;
-    using HitEvents = std::vector<toy_acai::HitEvent>;
+    using DeathEvents = std::vector<toy_acai::DeathEvent>;
 
     constexpr const char* Siv3DThreadError = "Siv3D rendering must be used from the thread that created the BattlefieldRenderer";
 
@@ -354,25 +354,25 @@ NB_MODULE(toy_acai_core, m)
         .def(nb::init<>())
         .def_rw("id", &toy_acai::MissileState::id)
         .def_rw("team_id", &toy_acai::MissileState::teamId)
+        .def_rw("fired_frame", &toy_acai::MissileState::firedFrame)
         .def_rw("shooter_fighter_index", &toy_acai::MissileState::shooterFighterIndex)
         .def_rw("target_fighter_index", &toy_acai::MissileState::targetFighterIndex)
         .def_rw("position", &toy_acai::MissileState::position)
         .def_rw("yaw", &toy_acai::MissileState::yaw)
         .def_rw("speed", &toy_acai::MissileState::speed)
-        .def_rw("age", &toy_acai::MissileState::age)
-        .def_rw("lock_lost_time", &toy_acai::MissileState::lockLostTime);
+        .def_rw("age", &toy_acai::MissileState::age);
 
-    nb::class_<toy_acai::HitEvent>(m, "HitEvent")
-        .def(nb::init<>())
-        .def_rw("shooter_fighter_index", &toy_acai::HitEvent::shooterFighterIndex)
-        .def_rw("target_fighter_index", &toy_acai::HitEvent::targetFighterIndex);
+    nb::class_<toy_acai::DeathEvent> deathEvent(m, "DeathEvent");
 
-    nb::class_<toy_acai::FighterInput>(m, "FighterInput")
+    nb::enum_<toy_acai::DeathEvent::Reason>(deathEvent, "Reason")
+        .value("OutOfBounds", toy_acai::DeathEvent::Reason::OutOfBounds)
+        .value("HitByMissile", toy_acai::DeathEvent::Reason::HitByMissile);
+
+    deathEvent
         .def(nb::init<>())
-        .def(nb::init<double, double, bool>(), "acceleration"_a, "turn"_a, "fire"_a)
-        .def_rw("acceleration", &toy_acai::FighterInput::acceleration)
-        .def_rw("turn", &toy_acai::FighterInput::turn)
-        .def_rw("fire", &toy_acai::FighterInput::fire);
+        .def_rw("reason", &toy_acai::DeathEvent::reason)
+        .def_rw("fighter_index", &toy_acai::DeathEvent::fighterIndex)
+        .def_rw("killer_missile", &toy_acai::DeathEvent::killerMissile);
 
     nb::class_<FighterStates>(m, "FighterStates")
         .def("__len__", &FighterStates::size)
@@ -389,11 +389,12 @@ NB_MODULE(toy_acai_core, m)
         }, nb::keep_alive<0, 1>());
 
     nb::bind_vector<MissileStates, nb::rv_policy::reference>(m, "MissileStates");
-    nb::bind_vector<HitEvents, nb::rv_policy::reference>(m, "HitEvents");
+    nb::bind_vector<DeathEvents, nb::rv_policy::reference>(m, "DeathEvents");
 
     nb::class_<toy_acai::BattlefieldContext>(m, "BattlefieldContext")
         .def(nb::init<>())
         .def(nb::init<const toy_acai::BattlefieldContext&>())
+        .def_rw("frame_count", &toy_acai::BattlefieldContext::frameCount)
         .def_prop_ro("fighters", [](toy_acai::BattlefieldContext& context)
         {
             return FighterStates{context};
@@ -402,14 +403,21 @@ NB_MODULE(toy_acai_core, m)
         {
             return context.missiles;
         }, nb::rv_policy::reference_internal)
-        .def_prop_ro("hit_events", [](toy_acai::BattlefieldContext& context) -> HitEvents&
+        .def_prop_ro("death_events", [](toy_acai::BattlefieldContext& context) -> DeathEvents&
         {
-            return context.hitEvents;
+            return context.deathEvents;
         }, nb::rv_policy::reference_internal)
         .def_rw("next_missile_id", &toy_acai::BattlefieldContext::nextMissileId)
         .def_rw("screen_size", &toy_acai::BattlefieldContext::screenSize)
         .def_rw("battlefield_area", &toy_acai::BattlefieldContext::battlefieldArea)
         .def_rw("battlefield_diagonal_length", &toy_acai::BattlefieldContext::battlefieldDiagonalLength);
+
+    nb::class_<toy_acai::FighterInput>(m, "FighterInput")
+        .def(nb::init<>())
+        .def(nb::init<double, double, bool>(), "acceleration"_a, "turn"_a, "fire"_a)
+        .def_rw("acceleration", &toy_acai::FighterInput::acceleration)
+        .def_rw("turn", &toy_acai::FighterInput::turn)
+        .def_rw("fire", &toy_acai::FighterInput::fire);
 
     nb::class_<toy_acai::DistanceFromBoundary>(m, "DistanceFromBoundary")
         .def(nb::init<>())

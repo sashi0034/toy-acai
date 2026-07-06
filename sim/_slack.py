@@ -5,18 +5,26 @@ uploader can then run on a login node that has network access, while the
 training process on a compute node never opens a network connection.
 """
 
+from datetime import datetime
 import json
 import mimetypes
 import os
 from pathlib import Path
+import socket
 import time
 from typing import Protocol
 import urllib.parse
 import urllib.request
+from zoneinfo import ZoneInfo
 
 
 SLACK_API = "https://slack.com/api"
 BACKENDS = {"off", "direct", "external"}
+
+
+def training_started_message() -> str:
+    timestamp = datetime.now(ZoneInfo("Asia/Tokyo")).strftime("%Y-%m-%d %H:%M:%S %Z")
+    return f"toy-acai started at {timestamp} on {socket.gethostname()}"
 
 
 def load_dotenv(path: Path) -> None:
@@ -264,7 +272,7 @@ class DirectPoster:
             return
         try:
             self.thread = SlackThread(self.token, self.channel_id)
-            self.thread.post_root("toy-acai sim training started", self.hyperparameters_path)
+            self.thread.post_root(training_started_message(), self.hyperparameters_path)
         except Exception as error:
             self.disabled = True
             self._warn(str(error))
@@ -297,7 +305,7 @@ class ExternalPoster:
             {
                 "type": "thread_root",
                 "attachment_path": str(self.hyperparameters_path.resolve()),
-                "comment": "toy-acai sim training started",
+                "comment": training_started_message(),
             },
         )
 

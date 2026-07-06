@@ -37,17 +37,20 @@ def build_observation(
     def add(group: str, name: str, value: float) -> None:
         features.append(ObservationFeature(group, name, float(value)))
 
-    battlefield_diagonal = battlefield.battlefield_diagonal_length
-
-    distance_factor = 1.0 / (battlefield_diagonal * 0.5)
+    # battlefield_diagonal = battlefield.battlefield_diagonal_length
+    # distance_factor = 1.0 / (battlefield_diagonal * 0.5)
 
     # 自機情報
     fighter = battlefield.fighters[0]
     add("AGENT", "speed", fighter.speed * hyperparameters.SPEED_NORMALIZATION_FACTOR)
-    add("AGENT", "missile_cooldown", fighter.missile_cooldown > 0)  # TODO: rate
+    add("AGENT", "missile_available", fighter.missile_cooldown > 0)  # TODO: rate
 
     boundary_distance = core.compute_distance_from_boundary(battlefield, 0)
-    add("AGENT", "boundary_distance", boundary_distance.distance * distance_factor)
+    add(
+        "AGENT",
+        "boundary_distance",
+        boundary_distance.distance * hyperparameters.DISTANCE_NORMALIZATION_FACTOR,
+    )
     add("AGENT", "boundary_angle_cos", math.cos(boundary_distance.relative_angle))
     add("AGENT", "boundary_angle_sin", math.sin(boundary_distance.relative_angle))
 
@@ -64,10 +67,16 @@ def build_observation(
             opponent = battlefield.fighters[opponent_index]
             add(group, "alive", 1.0)
             add(
-                group, "relative_x", relative_pose.relative_position.x * distance_factor
+                group,
+                "relative_x",
+                relative_pose.relative_position.x
+                * hyperparameters.DISTANCE_NORMALIZATION_FACTOR,
             )
             add(
-                group, "relative_y", relative_pose.relative_position.y * distance_factor
+                group,
+                "relative_y",
+                relative_pose.relative_position.y
+                * hyperparameters.DISTANCE_NORMALIZATION_FACTOR,
             )
             add(
                 group,
@@ -108,10 +117,16 @@ def build_observation(
             missile = battlefield.missiles[missile_index]
             add(group, "alive", 1.0)
             add(
-                group, "relative_x", relative_pose.relative_position.x * distance_factor
+                group,
+                "relative_x",
+                relative_pose.relative_position.x
+                * hyperparameters.DISTANCE_NORMALIZATION_FACTOR,
             )
             add(
-                group, "relative_y", relative_pose.relative_position.y * distance_factor
+                group,
+                "relative_y",
+                relative_pose.relative_position.y
+                * hyperparameters.DISTANCE_NORMALIZATION_FACTOR,
             )
             add(
                 group,

@@ -1,210 +1,116 @@
 #!/usr/bin/env python3
-import random
-from collections import deque
+from concurrent.futures import ProcessPoolExecutor
+import multiprocessing
 from pathlib import Path
+import time
 
-from PIL import Image
 import torch
 
-from .rl.curriculum import Curriculum, initial_curriculum
-from .rl.render_utils import render_observation, render_reward, save_rendered_frames
-from .rl.observation import OBS_DIM, build_observation, observation_to_tensor
-from .rl.policy_network import PolicyNetwork
-from .rl.returns import compute_returns, normalize_returns
-from .rl.value_network import ValueNetwork
-
-from .core import core
-from .simulation_context import SimulationContext
-from . import constants
 from . import hyperparameters
 from ._slack import create_poster
+from .core import core
+from .rl.curriculum import CurriculumController
+from .rl.observation import OBS_DIM
+from .rl.policy_network import PolicyNetwork
+from .rl.rollout import (
+    Rollout,
+    collect_episode,
+    initialize_rollout_worker,
+    rollout_worker,
+    store_state_dict,
+)
+from .rl.value_network import ValueNetwork
+from .simulation_context import SimulationContext, WorkerContext
 
 
-def _copy_inputs(inputs: list[core.FighterInput]) -> list[core.FighterInput]:
-    return [
-        core.FighterInput(
-            fighter_input.acceleration, fighter_input.turn, fighter_input.fire
-        )
-        for fighter_input in inputs
-    ]
+def _episode_seed(update: int, episode_in_update: int) -> int:
+    return update * hyperparameters.EPISODES_PER_UPDATE + episode_in_update
 
 
-def _try_create_teacher_data(
-    battlefield_history: deque[core.BattlefieldContext],
-    inputs_history: deque[list[core.FighterInput]],
-) -> list[tuple[torch.Tensor, torch.Tensor]]:
-    """
-    過去に巻き戻し、直前で回避行動可能ならそれを教師データとする
-    """
-
-    past_battlefield = core.BattlefieldContext(battlefield_history[0])
-
-    # 過去入力が左旋回をやっていたら、右急旋回を試してみる
-    override_turn = (
-        1.0
-        if sum(inputs_history[i][0].turn for i in range(len(inputs_history))) < 0.0
-        else -1.0
-    )
-
-    override_action = core.FighterInput(1.0, override_turn, False)
-    override_action_tensor = torch.tensor(
-        [
-            override_action.acceleration,
-            override_action.turn,
-            float(override_action.fire),
-        ]
-    )
-
-    teacher_data = []
-
-    # 過去フレームを新入力でシミュレーション
-    for inputs in inputs_history:
-        # TODO: before_step() が無く、ミサイル発射タイミングが異なる問題への対処
-
-        teacher_data.append(
-            (
-                observation_to_tensor(build_observation(past_battlefield)),
-                override_action_tensor,
-            )
-        )
-
-        override_inputs = _copy_inputs(inputs)
-        override_inputs[0] = override_action
-
-        core.update_battlefield(
-            past_battlefield, override_inputs, constants.SIMULATION_DELTA_TIME
-        )
-
-        if past_battlefield.fighters[0].health <= 0.0:
-            # 失敗
-            return []
-
-    return teacher_data
-
-
-def run_episode(
+def _render_episode(
     ctx: SimulationContext,
     policy: PolicyNetwork,
     value_network: ValueNetwork,
-    curriculum: Curriculum,
-    rng: random.Random,
-    render_path: Path | None = None,
-):
-    battlefield = ctx.battlefield
-    device = next(policy.parameters()).device
+    curriculum_controller: CurriculumController,
+    update: int,
+) -> tuple[Path, Rollout]:
+    episode_in_update = update % hyperparameters.EPISODES_PER_UPDATE
 
-    policy.train()
-    value_network.train()
+    # シード値を意図的に巡回させる
+    seed = _episode_seed(hyperparameters.NUM_UPDATES, episode_in_update)
+    torch.manual_seed(seed)
 
-    render = render_path is not None
-    if render:
-        ctx.renderer = core.BattlefieldRenderer()
-        ctx.renderer.enable_render_to_image_buffer(core.Size(*constants.RENDER_SIZE))
-    renderer = ctx.renderer
-
-    curriculum.setup_battlefield(ctx, rng)
-
-    frames = []
-    max_step_count = round(
-        hyperparameters.MAX_SIMULATION_SECONDS / constants.SIMULATION_DELTA_TIME
-    )
-    render_every_steps = round(
-        constants.RENDER_INTERVAL / constants.SIMULATION_DELTA_TIME
+    render_path = (
+        ctx.output_directory() / f"update_{update:04d}_{episode_in_update:04d}.gif"
     )
 
-    log_probs = []
-    values = []
-    rewards = []
-    total_reward = 0.0
-
-    battlefield_history: deque[core.BattlefieldContext] = deque(maxlen=30)
-    inputs_history: deque[list[core.FighterInput]] = deque(maxlen=30)
-
-    # シミュレーションループ
-    step = 0
-    for step in range(1, max_step_count + 1):
-        curriculum.before_step(ctx, rng)
-
-        # ニューラルネットワークに入力する観測を構築し、アクションをサンプリングする
-        observation = build_observation(ctx.battlefield)
-        obs_tensor = observation_to_tensor(observation).to(device)
-        action_tensor, log_prob = policy.sample_action(obs_tensor)
-        acceleration, turn, fire = action_tensor.detach().cpu().tolist()
-
-        value = value_network(obs_tensor)
-
-        # 入力
-        inputs = [core.FighterInput() for _ in range(core.FIGHTER_COUNT)]
-
-        inputs[0] = core.FighterInput(acceleration, turn, fire >= 0.5)
-
-        for fighter_index, enemy_input in curriculum.opponent_inputs(ctx, rng).items():
-            inputs[fighter_index] = enemy_input
-
-        # 更新直前の状態と入力を直近フレーム分だけ保持する
-        battlefield_history.append(core.BattlefieldContext(battlefield))
-        inputs_history.append(_copy_inputs(inputs))
-
-        core.update_battlefield(battlefield, inputs, constants.SIMULATION_DELTA_TIME)
-
-        reward = curriculum.step_reward(ctx, battlefield_history[-1], inputs)
-        rewards.append(reward)
-        total_reward += reward
-        log_probs.append(log_prob)
-        values.append(value)
-
-        if render:
-            renderer.update(battlefield, constants.SIMULATION_DELTA_TIME)
-
-            if step % render_every_steps == 0:
-                renderer.render(battlefield)
-
-                frame = Image.fromarray(renderer.image_buffer(), mode="RGBA").copy()
-
-                # FIXME: 前フレームの情報が描画されている
-                frame = render_reward(frame, total_reward, value)
-                frame = render_observation(frame, observation)
-
-                frames.append(frame)
-
-        if curriculum.is_terminal(ctx):
-            break
-
-    # 報酬計算
-    returns = compute_returns(rewards, hyperparameters.REWARD_DISCOUNT)
-    returns = returns.to(device)
-
-    values_tensor = torch.stack(values)
-
-    # Monte Carlo Advantage
-    # FIXME: 分散が大きいので GAE にしたい
-    advantages = normalize_returns(returns - values_tensor.detach())
-
-    # Actor-Critic の損失
-    actor_loss = -(torch.stack(log_probs) * advantages).mean()
-    critic_loss = torch.nn.functional.mse_loss(values_tensor, returns)
-
-    if render:
-        assert render_path is not None
-        save_rendered_frames(frames, render_path, constants.RENDER_INTERVAL)
-    curriculum.record_episode()
-
-    hit_by_enemy = any(
-        hit_event.target_fighter_index == 0 for hit_event in battlefield.hit_events
+    # Trails belong to one GIF, so reset the parent-owned renderer for each one.
+    ctx.renderer = core.BattlefieldRenderer()
+    worker_ctx = WorkerContext(worker_id=-1, seed=seed)
+    curriculum = curriculum_controller.create_episode()
+    rollout = collect_episode(
+        worker_ctx,
+        policy,
+        value_network,
+        curriculum,
+        renderer=ctx.renderer,
+        render_path=render_path,
     )
-    teacher_data = (
-        _try_create_teacher_data(battlefield_history, inputs_history)
-        if hit_by_enemy
-        else []
+    return render_path, rollout
+
+
+def _losses_from_rollout(
+    rollout: Rollout,
+    policy_network: PolicyNetwork,
+    value_network: ValueNetwork,
+    device: torch.device,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    observations = torch.from_numpy(rollout.observations).to(device)
+    raw_actions = torch.from_numpy(rollout.raw_actions).to(device)
+    fires = torch.from_numpy(rollout.fires).to(device)
+    advantages = torch.from_numpy(rollout.advantages).to(device)
+    returns = torch.from_numpy(rollout.returns).to(device)
+
+    # Actor-Critic の損失は、親プロセスで現在のネットワークを使って再計算する
+    log_probs = policy_network.log_prob_from_raw_action(
+        observations, raw_actions, fires
+    )
+    actor_loss = -(log_probs * advantages).mean()
+    critic_loss = torch.nn.functional.mse_loss(value_network(observations), returns)
+    return actor_loss, critic_loss
+
+
+def save_checkpoint(
+    path: Path,
+    policy_network: PolicyNetwork,
+    value_network: ValueNetwork,
+    update: int,
+) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    torch.save(
+        {
+            "policy_state_dict": policy_network.state_dict(),
+            "value_state_dict": value_network.state_dict(),
+        },
+        path,
     )
 
-    return sum(rewards), actor_loss, critic_loss, step, teacher_data
+
+def load_checkpoint(
+    path: Path,
+    policy_network: PolicyNetwork,
+    value_network: ValueNetwork,
+    device: torch.device,
+) -> None:
+    checkpoint = torch.load(path, map_location=device)
+    policy_network.load_state_dict(checkpoint["policy_state_dict"])
+    value_network.load_state_dict(checkpoint["value_state_dict"])
 
 
 def run():
     ctx = SimulationContext()
-
     print(f"Output directory: {ctx.output_directory()}")
+    print(f"Rollout workers: {ctx.rollout_worker_count}")
 
     poster = create_poster(ctx.output_directory(), Path(__file__).resolve().parents[1])
     poster.start()
@@ -226,104 +132,153 @@ def run():
         value_network.parameters(), lr=hyperparameters.LEARNING_RATE
     )
 
-    curriculum = initial_curriculum(ctx)
-
-    for update in range(hyperparameters.NUM_UPDATES):
-        batch_rewards = []
-        batch_actor_losses = []
-        batch_critic_losses = []
-        batch_steps = []
-        teacher_data = []
-
-        # 取り敢えず update ごとに同じ乱数シードを使ってみる
-        rng = random.Random(0)
-
-        # 複数エピソードを実行して報酬と損失を収集する
-        render_path_result = None
-        for episode_in_update in range(hyperparameters.EPISODES_PER_UPDATE):
-            render_path = None
-            if episode_in_update == (update % hyperparameters.EPISODES_PER_UPDATE):
-                assert render_path is None
-                render_path = (
-                    ctx.output_directory()
-                    / f"update_{update:04d}_{episode_in_update:04d}.gif"
-                )
-                render_path_result = render_path
-
-            # 単一エピソードを実行して報酬と損失を計算する
-            (
-                total_reward,
-                actor_loss,
-                critic_loss,
-                steps,
-                episode_teacher_data,
-            ) = run_episode(
-                ctx,
-                policy_network,
-                value_network,
-                curriculum,
-                rng,
-                render_path,
-            )
-
-            batch_rewards.append(total_reward)
-            batch_actor_losses.append(actor_loss)
-            batch_critic_losses.append(critic_loss)
-            batch_steps.append(steps)
-            teacher_data.extend(episode_teacher_data)
-
-        actor_loss = torch.stack(batch_actor_losses).mean()
-        critic_loss = torch.stack(batch_critic_losses).mean()
-
-        # 教師データがある場合は、教師あり学習で追加の勾配更新を行う
-        teacher_loss = None
-        if teacher_data and (update % hyperparameters.TEACHER_UPDATE_INTERVAL) == 0:
-            teacher_observations = torch.stack(
-                [observation for observation, _ in teacher_data]
-            ).to(device)
-            teacher_actions = torch.stack([action for _, action in teacher_data]).to(
-                device
-            )
-            teacher_loss = policy_network.supervised_loss(
-                teacher_observations, teacher_actions
-            )
-
-        # 方策更新
-        policy_optimizer.zero_grad()
-        policy_loss = actor_loss
-        if teacher_loss is not None:
-            policy_loss += teacher_loss
-        policy_loss.backward()
-        policy_optimizer.step()
-
-        # 価値関数更新
-        value_optimizer.zero_grad()
-        value_loss = critic_loss
-        value_loss.backward()
-        value_optimizer.step()
-
-        message = (
-            f"curriculum={curriculum.name} "
-            f"update={update + 1} episodes={hyperparameters.EPISODES_PER_UPDATE} "
-            f"reward={sum(batch_rewards) / len(batch_rewards):.2f} "
-            f"actor_loss={actor_loss.item():.4f} "
-            f"critic_loss={critic_loss.item():.4f} "
-            f"teacher_loss={teacher_loss.item() if teacher_loss is not None else 'None'} "
-            f"teacher_samples={len(teacher_data)} "
-            f"steps={sum(batch_steps) / len(batch_steps):.1f} "
+    if ctx.checkpoint_resume_path is not None:
+        load_checkpoint(
+            ctx.checkpoint_resume_path,
+            policy_network,
+            value_network,
+            device,
         )
-        print(message)
-        if render_path_result is not None:
+        print(f"Loaded checkpoint: {ctx.checkpoint_resume_path}")
+
+    curriculum_controller = CurriculumController()
+
+    mp_context = multiprocessing.get_context("spawn")
+    with ProcessPoolExecutor(  # A2C
+        max_workers=ctx.rollout_worker_count,
+        mp_context=mp_context,
+        initializer=initialize_rollout_worker,
+    ) as executor:
+        for update in range(hyperparameters.NUM_UPDATES):
+            update_start = time.perf_counter()
+            policy_state = store_state_dict(policy_network)
+            value_state = store_state_dict(value_network)
+
+            # 複数エピソードを描画なし worker で実行して rollout を収集する
+            futures = [
+                executor.submit(
+                    rollout_worker,
+                    episode_in_update,
+                    _episode_seed(update, episode_in_update),
+                    policy_state,
+                    value_state,
+                    curriculum_controller,
+                )
+                for episode_in_update in range(hyperparameters.EPISODES_PER_UPDATE - 1)
+            ]
+
+            # ワーカープロセスとは非同期に親プロセスでも実行 (描画あり)
+            render_path_result, render_rollout = _render_episode(
+                ctx, policy_network, value_network, curriculum_controller, update
+            )
+
+            # ワーカーの結果を待機して収集する
+            rollouts = [future.result() for future in futures]
+            rollouts.append(render_rollout)  # 描画されたエピソードも含める
+
+            policy_network.train()
+            value_network.train()
+
+            batch_actor_losses = []
+            batch_critic_losses = []
+            teacher_data = []
+            for rollout in rollouts:
+                actor_loss, critic_loss = _losses_from_rollout(
+                    rollout, policy_network, value_network, device
+                )
+                batch_actor_losses.append(actor_loss)
+                batch_critic_losses.append(critic_loss)
+                teacher_data.extend(rollout.teacher_data)
+
+                curriculum_controller.record_episode(rollout.is_success)
+
+            actor_loss = torch.stack(batch_actor_losses).mean()
+            critic_loss = torch.stack(batch_critic_losses).mean()
+
+            # 教師データがある場合は、教師あり学習で追加の勾配更新を行う
+            teacher_loss = None
+            if teacher_data and (update % hyperparameters.TEACHER_UPDATE_INTERVAL) == 0:
+                teacher_observations = torch.stack(
+                    [
+                        torch.from_numpy(observation)
+                        for observation, _, _ in teacher_data
+                    ]
+                ).to(device)
+                teacher_actions = torch.stack(
+                    [torch.from_numpy(action) for _, action, _ in teacher_data]
+                ).to(device)
+                teacher_action_learning_masks = torch.stack(
+                    [torch.from_numpy(mask) for _, _, mask in teacher_data]
+                ).to(device)
+                teacher_loss = policy_network.supervised_loss(
+                    teacher_observations,
+                    teacher_actions,
+                    teacher_action_learning_masks,
+                )
+
+            # 方策更新
+            policy_optimizer.zero_grad()
+            policy_loss = actor_loss
+            if teacher_loss is not None:
+                policy_loss += teacher_loss
+            policy_loss.backward()
+            policy_optimizer.step()
+
+            # 価値関数更新
+            value_optimizer.zero_grad()
+            critic_loss.backward()
+            value_optimizer.step()
+
+            # チェックポイント保存
+            if (
+                ctx.checkpoint_save_interval_updates > 0
+                and (update + 1) % ctx.checkpoint_save_interval_updates == 0
+            ):
+                checkpoint_path = (
+                    ctx.output_directory()
+                    / "checkpoints"
+                    / f"update_{update + 1:04d}.pt"
+                )
+                save_checkpoint(
+                    checkpoint_path,
+                    policy_network,
+                    value_network,
+                    update,
+                )
+                print(f"Saved checkpoint: {checkpoint_path}")
+
+            update_elapsed = time.perf_counter() - update_start
+
+            average_reward = sum(rollout.total_reward for rollout in rollouts) / len(
+                rollouts
+            )
+
+            average_steps = sum(rollout.steps for rollout in rollouts) / len(rollouts)
+
+            message = (
+                f"curriculum={curriculum_controller.name} "
+                f"update={update} "
+                f"success_rate={curriculum_controller.progress.success_rate:.2f} "
+                f"reward={average_reward:.2f} "
+                f"actor_loss={actor_loss.item():.4f} "
+                f"critic_loss={critic_loss.item():.4f} "
+                f"teacher_loss={teacher_loss.item() if teacher_loss is not None else 'None'} "
+                f"teacher_samples={len(teacher_data)} "
+                f"steps={average_steps:.1f}\n"
+                f"update_elapsed={update_elapsed:.1f}s"
+            )
+            print(message)
             poster.post_file(
                 render_path_result,
                 f"{render_path_result.stem}:\n```{message}```",
-                f"{render_path_result.stem}",
+                render_path_result.stem,
             )
 
-        next_curriculum = curriculum.after_update(ctx)
-        if next_curriculum is not None:
-            print(f"Curriculum promoted: {curriculum.name} -> {next_curriculum.name}")
-            curriculum = next_curriculum
+            # カリキュラムの昇格評価
+            promotion = curriculum_controller.after_update()
+            if promotion is not None:
+                previous_name, next_name = promotion
+                print(f"Curriculum promoted: {previous_name} -> {next_name}")
 
 
 if __name__ == "__main__":

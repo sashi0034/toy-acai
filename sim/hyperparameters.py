@@ -18,8 +18,14 @@ TEACHER_UPDATE_INTERVAL = 5
 # ステップごとの報酬割引率
 REWARD_DISCOUNT = 0.99
 
+# GAE のトレース減衰率 λ
+GAE_LAMBDA = 0.95
+
 # 最大シミュレーション時間 (秒)
 MAX_SIMULATION_SECONDS = 15.0
+
+# 観測特徴量の距離を正規化するための係数
+DISTANCE_NORMALIZATION_FACTOR = 1.0 / 500.0
 
 # 観測特徴量の速度を正規化するための係数
 SPEED_NORMALIZATION_FACTOR = 1.0 / 500.0

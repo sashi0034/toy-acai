@@ -80,6 +80,33 @@ def _losses_from_rollout(
     return actor_loss, critic_loss
 
 
+def save_checkpoint(
+    path: Path,
+    policy_network: PolicyNetwork,
+    value_network: ValueNetwork,
+    update: int,
+) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    torch.save(
+        {
+            "policy_state_dict": policy_network.state_dict(),
+            "value_state_dict": value_network.state_dict(),
+        },
+        path,
+    )
+
+
+def load_checkpoint(
+    path: Path,
+    policy_network: PolicyNetwork,
+    value_network: ValueNetwork,
+    device: torch.device,
+) -> None:
+    checkpoint = torch.load(path, map_location=device)
+    policy_network.load_state_dict(checkpoint["policy_state_dict"])
+    value_network.load_state_dict(checkpoint["value_state_dict"])
+
+
 def run():
     ctx = SimulationContext()
     print(f"Output directory: {ctx.output_directory()}")
@@ -105,10 +132,19 @@ def run():
         value_network.parameters(), lr=hyperparameters.LEARNING_RATE
     )
 
+    if ctx.checkpoint_resume_path is not None:
+        load_checkpoint(
+            ctx.checkpoint_resume_path,
+            policy_network,
+            value_network,
+            device,
+        )
+        print(f"Loaded checkpoint: {ctx.checkpoint_resume_path}")
+
     curriculum_controller = CurriculumController()
 
     mp_context = multiprocessing.get_context("spawn")
-    with ProcessPoolExecutor( # A2C
+    with ProcessPoolExecutor(  # A2C
         max_workers=ctx.rollout_worker_count,
         mp_context=mp_context,
         initializer=initialize_rollout_worker,
@@ -192,6 +228,24 @@ def run():
             value_optimizer.zero_grad()
             critic_loss.backward()
             value_optimizer.step()
+
+            # チェックポイント保存
+            if (
+                ctx.checkpoint_save_interval_updates > 0
+                and (update + 1) % ctx.checkpoint_save_interval_updates == 0
+            ):
+                checkpoint_path = (
+                    ctx.output_directory()
+                    / "checkpoints"
+                    / f"update_{update + 1:04d}.pt"
+                )
+                save_checkpoint(
+                    checkpoint_path,
+                    policy_network,
+                    value_network,
+                    update,
+                )
+                print(f"Saved checkpoint: {checkpoint_path}")
 
             update_elapsed = time.perf_counter() - update_start
 

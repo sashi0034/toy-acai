@@ -298,13 +298,22 @@ class ExternalPoster:
         self.spool = spool
         self.hyperparameters_path = hyperparameters_path
 
+    def _snapshot_hyperparameters(self) -> Path:
+        self.spool.mkdir(parents=True, exist_ok=True)
+        destination = self.spool / self.hyperparameters_path.name
+        temporary = self.spool / f".{self.hyperparameters_path.name}.tmp"
+        temporary.write_bytes(self.hyperparameters_path.read_bytes())
+        temporary.replace(destination)
+        return destination
+
     def start(self) -> None:
+        hyperparameters_snapshot = self._snapshot_hyperparameters()
         write_spool_record(
             self.spool,
             "000000_thread_root",
             {
                 "type": "thread_root",
-                "attachment_path": str(self.hyperparameters_path.resolve()),
+                "attachment_path": str(hyperparameters_snapshot.resolve()),
                 "comment": training_started_message(),
             },
         )

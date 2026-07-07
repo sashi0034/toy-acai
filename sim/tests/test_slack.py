@@ -24,7 +24,9 @@ class SlackPosterTest(unittest.TestCase):
 
             with mock.patch.object(slack, "SlackThread", return_value=fake_thread), mock.patch.object(
                 slack, "upload_file", return_value="FGIF"
-            ) as upload, mock.patch.dict(
+            ) as upload, mock.patch.object(
+                slack, "training_started_message", return_value="toy-acai sim training started"
+            ), mock.patch.dict(
                 os.environ, {"SLACK_BOT_TOKEN": "token", "SLACK_CHANNEL_ID": "channel"}
             ):
                 poster = slack.DirectPoster("token", "channel", hyperparameters)
@@ -57,6 +59,7 @@ class SlackPosterTest(unittest.TestCase):
 
             poster = slack.ExternalPoster(root / "run" / "slack", hyperparameters)
             poster.start()
+            hyperparameters.write_text("NUM_UPDATES = 2\n", encoding="utf-8")
             poster.post_file(gif_path, "update", "update_000000_0000")
 
             pending = root / "run" / "slack" / "pending"
@@ -67,7 +70,9 @@ class SlackPosterTest(unittest.TestCase):
             ])
             root_record = json.loads(records[0].read_text(encoding="utf-8"))
             self.assertEqual(root_record["type"], "thread_root")
-            self.assertEqual(root_record["attachment_path"], str(hyperparameters.resolve()))
+            snapshot = root / "run" / "slack" / "hyperparameters.py"
+            self.assertEqual(root_record["attachment_path"], str(snapshot.resolve()))
+            self.assertEqual(snapshot.read_text(encoding="utf-8"), "NUM_UPDATES = 1\n")
 
     def test_uploader_sends_root_and_attachment_to_its_thread(self):
         with tempfile.TemporaryDirectory() as tmp_dir:

@@ -128,6 +128,7 @@
     <ClCompile Include="..\src\BattleFieldUtils.cpp" />
     <ClCompile Include="..\src\LivePPAddon.cpp" />
     <ClCompile Include="..\src\Main.cpp" />
+    <ClCompile Include="..\src\PolicyAI.cpp" />
     <ClCompile Include="stdafx.cpp">
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Create</PrecompiledHeader>
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release|x64'">Create</PrecompiledHeader>
@@ -342,9 +343,11 @@
     <ClInclude Include="..\src\BattlefieldRenderer.h" />
     <ClInclude Include="..\src\BattleFieldUtils.h" />
     <ClInclude Include="..\src\LivePPAddon.h" />
+    <ClInclude Include="..\src\PolicyAI.h" />
     <ClInclude Include="stdafx.h" />
   </ItemGroup>
   <ItemGroup>
+    <None Include="App\model\p1783401529686949_6447.policy.bin" />
     <None Include="App\example\obj\blacksmith.obj">
       <FileType>Document</FileType>
     </None>

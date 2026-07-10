@@ -144,6 +144,9 @@
     <ClCompile Include="stdafx.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="..\src\PolicyAI.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <Image Include="App\icon.ico">
@@ -275,6 +278,9 @@
     </Text>
   </ItemGroup>
   <ItemGroup>
+    <None Include="App\model\p1783401529686949_6447.policy.bin">
+      <Filter>Resource Files</Filter>
+    </None>
     <None Include="App\dll\soundtouch\SoundTouch_x64.dll">
       <Filter>Resource Files\dll\soundtouch</Filter>
     </None>
@@ -806,6 +812,9 @@
     </Xml>
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="..\src\PolicyAI.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
     <ClInclude Include="stdafx.h">
       <Filter>Header Files</Filter>
     </ClInclude>

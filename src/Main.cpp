@@ -2,10 +2,11 @@
 
 #include "BattlefieldContext.h"
 #include "BattlefieldRenderer.h"
+#include "PolicyAI.h"
 
 #include <array>
+#include <random>
 
-#include "BattleFieldUtils.h"
 #include "LivePPAddon.h"
 
 using namespace toy_acai;
@@ -101,19 +102,29 @@ void Main()
 
     BattlefieldRenderer renderer{};
 
+    const FilePath policyPath = U"model/p1783401529686949_6447.policy.bin";
+    const PolicyNetwork policy = PolicyNetwork::Load(policyPath);
+    std::mt19937 randomEngine{std::random_device{}()};
+
     while (System::Update())
     {
-        const FighterInput input{
+        std::array<FighterInput, FighterCount> inputs{};
+
+        const FighterInput playerInput{
             static_cast<double>(KeyW.pressed()) - static_cast<double>(KeyS.pressed()),
             static_cast<double>(KeyD.pressed()) - static_cast<double>(KeyA.pressed()),
             KeySpace.pressed(),
         };
-        std::array<FighterInput, FighterCount> inputs{};
+        inputs[0] = playerInput;
 
-        // inputs.fill(input);
-        inputs[0] = {input};
-        battlefield.fighters[4].position = battlefield.battlefieldArea.center();
-        battlefield.fighters[5].position = battlefield.battlefieldArea.center();
+        for (int fighterIndex = 1; fighterIndex < FighterCount; ++fighterIndex)
+        {
+            if (battlefield.fighters[fighterIndex].health <= 0.0)
+            {
+                continue;
+            }
+            inputs[fighterIndex] = policy.SampleAction(BuildPolicyObservation(battlefield, fighterIndex), randomEngine);
+        }
 
         const double deltaTime = Scene::DeltaTime();
 
@@ -121,10 +132,6 @@ void Main()
 
         renderer.update(battlefield, deltaTime);
         renderer.render(battlefield);
-
-        ClearPrint();
-        RelativePose r = ComputeRelativePose(AbsolutePose(battlefield.fighters[0]), AbsolutePose(battlefield.fighters[4]));
-        Print << U"Relative Position: " << r.relativePosition.asPoint() << U", Relative Yaw: " << Circular{100.0, r.relativeYaw}.fastToFloat2().asPoint() << int(r.relativeYaw * 100);
     }
 }
 

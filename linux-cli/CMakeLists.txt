@@ -11,6 +11,7 @@ add_executable(toy-acai
 	../src/BattlefieldRenderer.cpp
 	../src/BattleFieldUtils.cpp
 	../src/Main.cpp
+	../src/PolicyAI.cpp
 )
 
 target_compile_features(toy-acai PRIVATE cxx_std_20)

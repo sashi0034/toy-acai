@@ -10,6 +10,8 @@ namespace toy_acai
     public:
         BattlefieldRenderer();
 
+        void setHighlightAgent(int agentIndex);
+
         void update(const BattlefieldContext& context, double deltaTime);
 
         void render(const BattlefieldContext& context);

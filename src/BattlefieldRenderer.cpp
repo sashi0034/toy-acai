@@ -65,6 +65,7 @@ struct BattlefieldRenderer::Impl
     bool m_renderToImageBuffer{};
     Image m_imageBuffer{1920, 1080};
     Vec2 m_imageBufferScale{1.0, 1.0};
+    int m_highlightAgentIndex{-1};
 
     PaintableTexture fighterTexture{Icon::CreateImage(0xF0390, 256)}; // https://pictogrammers.com/library/mdi/icon/navigation/
     PaintableTexture missileTexture{Icon::CreateImage(0xF0079, 256)}; // https://pictogrammers.com/library/mdi/icon/battery/
@@ -191,6 +192,11 @@ namespace toy_acai
 {
     BattlefieldRenderer::BattlefieldRenderer() : p_impl(std::make_shared<Impl>()) {}
 
+    void BattlefieldRenderer::setHighlightAgent(int agentIndex)
+    {
+        p_impl->m_highlightAgentIndex = agentIndex;
+    }
+
     void BattlefieldRenderer::update(const BattlefieldContext& context, double deltaTime)
     {
         p_impl->updateTrails(context, deltaTime);
@@ -287,6 +293,17 @@ namespace toy_acai
         }
 
         // 戦闘機を描画
+        if (p_impl->m_highlightAgentIndex != -1)
+        {
+            const auto& fighter = context.fighters[p_impl->m_highlightAgentIndex];
+            if (IsAlive(fighter))
+            {
+                const Vec2 pos = context.battlefieldArea.pos + fighter.position;
+                const double yaw = fighter.yaw;
+                p_impl->renderAt(p_impl->fighterTexture, v2(pos), yaw + Math::HalfPi, v1(FighterSize * 1.5), ColorF{Palette::Gold});
+            }
+        }
+
         for (const auto& fighter : context.fighters)
         {
             if (!IsAlive(fighter))

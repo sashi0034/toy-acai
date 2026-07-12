@@ -5,6 +5,7 @@
 #include "PolicyAI.h"
 
 #include <array>
+#include <iso646.h>
 #include <random>
 
 #include "LivePPAddon.h"
@@ -98,16 +99,25 @@ void Main()
 #endif
 
     BattlefieldContext battlefield{};
-    InitBattlefield(battlefield);
-
-    BattlefieldRenderer renderer{};
+    BattlefieldRenderer renderer;
 
     const FilePath policyPath = U"model/p1783401529686949_6447.policy.bin";
     const PolicyNetwork policy = PolicyNetwork::Load(policyPath);
     std::mt19937 randomEngine{std::random_device{}()};
 
+    bool initialized{};
     while (System::Update())
     {
+        if (not initialized || (KeyControl.pressed() && KeyR.down()))
+        {
+            InitBattlefield(battlefield);
+
+            renderer = {};
+            renderer.setHighlightAgent(0);
+
+            initialized = true;
+        }
+
         std::array<FighterInput, FighterCount> inputs{};
 
         const FighterInput playerInput{

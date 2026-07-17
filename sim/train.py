@@ -145,7 +145,7 @@ def run():
 
     mp_context = multiprocessing.get_context("spawn")
     with ProcessPoolExecutor(  # A2C
-        max_workers=ctx.rollout_worker_count,
+        max_workers=ctx.rollout_worker_count - 1,
         mp_context=mp_context,
         initializer=initialize_rollout_worker,
     ) as executor:

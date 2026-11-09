@@ -263,12 +263,22 @@ def rollout_worker(
     """Top-level entry point so it can be used with spawn."""
     torch.manual_seed(seed)
 
-    policy = PolicyNetwork(OBS_DIM, hidden_dim=hyperparameters.HIDDEN_DIM)
+    policy = PolicyNetwork(
+        OBS_DIM,
+        token_dim=hyperparameters.TOKEN_DIM,
+        attention_heads=hyperparameters.ATTENTION_HEADS,
+        ffn_dim=hyperparameters.TRANSFORMER_FFN_DIM,
+    )
     policy.load_state_dict(
         {name: torch.from_numpy(parameter) for name, parameter in policy_state.items()}
     )
 
-    value_network = ValueNetwork(OBS_DIM, hidden_dim=hyperparameters.HIDDEN_DIM)
+    value_network = ValueNetwork(
+        OBS_DIM,
+        token_dim=hyperparameters.TOKEN_DIM,
+        attention_heads=hyperparameters.ATTENTION_HEADS,
+        ffn_dim=hyperparameters.TRANSFORMER_FFN_DIM,
+    )
     value_network.load_state_dict(
         {name: torch.from_numpy(parameter) for name, parameter in value_state.items()}
     )

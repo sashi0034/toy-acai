@@ -1,7 +1,13 @@
 # hyperparameters.py
 
-# 隠れ層の次元数
-HIDDEN_DIM = 256
+# Transformer のトークン次元数
+TOKEN_DIM = 32
+
+# Multi-Head Attention のヘッド数
+ATTENTION_HEADS = 4
+
+# Transformer FFN の中間次元数
+TRANSFORMER_FFN_DIM = 128
 
 # 学習率
 LEARNING_RATE = 2e-4

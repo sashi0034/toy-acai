@@ -118,16 +118,22 @@ def run():
     # PyTorch 準備
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    policy_network = PolicyNetwork(OBS_DIM, hidden_dim=hyperparameters.HIDDEN_DIM).to(
-        device
-    )
+    policy_network = PolicyNetwork(
+        OBS_DIM,
+        token_dim=hyperparameters.TOKEN_DIM,
+        attention_heads=hyperparameters.ATTENTION_HEADS,
+        ffn_dim=hyperparameters.TRANSFORMER_FFN_DIM,
+    ).to(device)
     policy_optimizer = torch.optim.Adam(
         policy_network.parameters(), lr=hyperparameters.LEARNING_RATE
     )
 
-    value_network = ValueNetwork(OBS_DIM, hidden_dim=hyperparameters.HIDDEN_DIM).to(
-        device
-    )
+    value_network = ValueNetwork(
+        OBS_DIM,
+        token_dim=hyperparameters.TOKEN_DIM,
+        attention_heads=hyperparameters.ATTENTION_HEADS,
+        ffn_dim=hyperparameters.TRANSFORMER_FFN_DIM,
+    ).to(device)
     value_optimizer = torch.optim.Adam(
         value_network.parameters(), lr=hyperparameters.LEARNING_RATE
     )

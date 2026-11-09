@@ -3,28 +3,53 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.distributions import Normal, Bernoulli
 
+from .transformer import (
+    ObservationTokenizer,
+    QueryAttentionBlock,
+    SelfAttentionBlock,
+    validate_transformer_dimensions,
+)
+
 
 class PolicyNetwork(nn.Module):
     """Actor: 行動分布を出力する"""
 
-    def __init__(self, obs_dim: int, hidden_dim: int):
+    def __init__(
+        self,
+        obs_dim: int,
+        token_dim: int,
+        attention_heads: int,
+        ffn_dim: int,
+    ):
         super().__init__()
+        validate_transformer_dimensions(token_dim, attention_heads, ffn_dim)
 
-        self.net = nn.Sequential(
-            nn.Linear(obs_dim, hidden_dim),
-            nn.Tanh(),
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.Tanh(),
-        )
+        self.tokenizer = ObservationTokenizer(obs_dim, token_dim)
+        self.self_attention = SelfAttentionBlock(token_dim, attention_heads, ffn_dim)
+        self.agent_attention = QueryAttentionBlock(token_dim, attention_heads, ffn_dim)
 
-        self.action_mean = nn.Linear(hidden_dim, 2)
+        self.action_mean = nn.Linear(token_dim, 2)
 
         self.log_std = nn.Parameter(torch.full((2,), -0.5))
 
-        self.fire_logit = nn.Linear(hidden_dim, 1)
+        self.fire_logit = nn.Linear(token_dim, 1)
 
     def forward(self, obs: torch.Tensor):
-        x = self.net(obs)
+        single_case = obs.dim() == 1
+        if single_case:
+            obs = obs.unsqueeze(0)
+
+        tokens, padding_mask = self.tokenizer(obs)
+
+        # 第一層
+        tokens = self.self_attention(tokens, padding_mask)
+
+        # 第二層
+        x = self.agent_attention(
+            tokens[:, :1],  # Query: 自機トークン 1 個
+            tokens,  # Key, Value: 全トークン
+            padding_mask,
+        ).squeeze(1)
 
         mean = self.action_mean(x)  # shape: (batch_size, 2)
 
@@ -33,6 +58,11 @@ class PolicyNetwork(nn.Module):
 
         fire_logit = self.fire_logit(x)  # shape: (batch_size, 1)
         fire_logit = fire_logit.squeeze(-1)  # shape: (batch_size,)
+
+        if single_case:
+            mean = mean.squeeze(0)
+            std = std.squeeze(0)
+            fire_logit = fire_logit.squeeze(0)
 
         return mean, std, fire_logit
 
@@ -70,7 +100,7 @@ class PolicyNetwork(nn.Module):
         raw_actions: torch.Tensor,
         fires: torch.Tensor,
     ) -> torch.Tensor:
-        """アクションに対するサンプリング時の log 確率を計算する。"""
+        """アクションに対するサンプリング時の log 確率を計算する"""
         mean, std, fire_logit = self.forward(observations)
         normal = Normal(mean, std)
         fire_dist = Bernoulli(logits=fire_logit)
@@ -93,9 +123,7 @@ class PolicyNetwork(nn.Module):
         mean, _, _ = self.forward(observations)
 
         # 平均二乗誤差 (Mean Squared Error)
-        squared_errors = F.mse_loss(
-            torch.tanh(mean), actions[:, :2], reduction="none"
-        )
+        squared_errors = F.mse_loss(torch.tanh(mean), actions[:, :2], reduction="none")
 
         # 対象は action_learning_mask で指定
         return (squared_errors * action_learning_masks).sum() / (

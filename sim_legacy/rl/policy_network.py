@@ -70,7 +70,7 @@ class PolicyNetwork(nn.Module):
         raw_actions: torch.Tensor,
         fires: torch.Tensor,
     ) -> torch.Tensor:
-        """アクションに対するサンプリング時の log 確率を計算する。"""
+        """アクションに対するサンプリング時の log 確率を計算する"""
         mean, std, fire_logit = self.forward(observations)
         normal = Normal(mean, std)
         fire_dist = Bernoulli(logits=fire_logit)
@@ -93,9 +93,7 @@ class PolicyNetwork(nn.Module):
         mean, _, _ = self.forward(observations)
 
         # 平均二乗誤差 (Mean Squared Error)
-        squared_errors = F.mse_loss(
-            torch.tanh(mean), actions[:, :2], reduction="none"
-        )
+        squared_errors = F.mse_loss(torch.tanh(mean), actions[:, :2], reduction="none")
 
         # 対象は action_learning_mask で指定
         return (squared_errors * action_learning_masks).sum() / (

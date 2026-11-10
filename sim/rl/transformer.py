@@ -38,6 +38,7 @@ class ObservationTokenizer(nn.Module):
 
         # 各 entity の先頭特徴量は alive である前提とする
         # 存在しない entity の位置が True になるマスクを作り、Attention においてその位置の Key, Value を無視する
+        # マスクとして処理されるので alive 自体は NN に渡さない
         padding_mask = entities[:, :, 0] <= 0.0
         return entities[:, :, 1:], padding_mask, end
 
